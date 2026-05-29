@@ -173,10 +173,10 @@ function App() {
     return properties.filter((property) => saved.has(property.id));
   }, [saved]);
 
-  function notify(message) {
+  function notify(message, duration = 2400) {
     setToast(message);
     window.clearTimeout(notify.timer);
-    notify.timer = window.setTimeout(() => setToast(""), 2400);
+    notify.timer = window.setTimeout(() => setToast(""), duration);
   }
 
   async function toggleSaved(id) {
@@ -277,8 +277,8 @@ function App() {
     }
 
     event.currentTarget.reset();
-    setUrgentFeedback("Urgent help request sent. We will follow up shortly.");
-    notify("Urgent help request sent.");
+    setUrgentFeedback("Priority support request sent. We will follow up shortly.");
+    notify("Priority support request sent.", 6000);
   }
 
   async function requestVisit(property) {
@@ -685,8 +685,8 @@ function UrgentHelp({ onSubmit, feedback }) {
               <label className="field"><span>Move by</span><input name="move_by" type="date" /></label>
             </div>
             <label className="field"><span>Budget and notes</span><textarea name="notes" placeholder="Example: 1 BHK, under Rs 25k, close to metro" /></label>
-            <button className="button primary" type="submit">Send request</button>
             {feedback && <div className="form-feedback success">{feedback}</div>}
+            <button className="button primary" type="submit">Send request</button>
           </form>
         </div>
       </div>
