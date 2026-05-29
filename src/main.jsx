@@ -111,6 +111,8 @@ function App() {
   const [saved, setSaved] = useState(() => new Set());
   const [selectedProperty, setSelectedProperty] = useState(null);
   const [urgentFeedback, setUrgentFeedback] = useState("");
+  const [urgentError, setUrgentError] = useState("");
+  const [priorityFormOpen, setPriorityFormOpen] = useState(false);
   const [toast, setToast] = useState("");
 
   useEffect(() => {
@@ -249,16 +251,21 @@ function App() {
 
   async function submitUrgentRequest(event) {
     event.preventDefault();
-    setUrgentFeedback("");
+    setUrgentFeedback("Priority support request sent. We will follow up shortly.");
+    setUrgentError("");
     if (!supabase) {
-      notify("Supabase is not configured.");
-      return;
+      const message = "Supabase is not configured.";
+      setUrgentError(message);
+      notify(message);
+      return false;
     }
 
     if (!session?.user?.id) {
       setAuthOpen(true);
-      notify("Login to send an urgent request.");
-      return;
+      const message = "Login to send an urgent request.";
+      setUrgentError(message);
+      notify(message);
+      return false;
     }
 
     const formData = new FormData(event.currentTarget);
@@ -272,13 +279,14 @@ function App() {
     });
 
     if (error) {
+      setUrgentError(error.message);
       notify(error.message);
-      return;
+      return false;
     }
 
     event.currentTarget.reset();
-    setUrgentFeedback("Priority support request sent. We will follow up shortly.");
     notify("Priority support request sent.", 6000);
+    return true;
   }
 
   async function requestVisit(property) {
@@ -374,7 +382,11 @@ function App() {
             </section>
 
             <HowItWorks />
-            <UrgentHelp onSubmit={submitUrgentRequest} feedback={urgentFeedback} />
+            <UrgentHelp onOpen={() => {
+              setUrgentFeedback("");
+              setUrgentError("");
+              setPriorityFormOpen(true);
+            }} />
           </>
         ) : (
           <SavedPropertiesPage
@@ -412,8 +424,51 @@ function App() {
         />
       )}
 
+      {priorityFormOpen && (
+        <PriorityRequestModal
+          onClose={() => {
+            setPriorityFormOpen(false);
+            setUrgentFeedback("");
+            setUrgentError("");
+          }}
+          onSubmit={submitUrgentRequest}
+          feedback={urgentFeedback}
+          error={urgentError}
+        />
+      )}
+
       {toast && <div className="toast">{toast}</div>}
     </>
+  );
+}
+
+function PriorityRequestModal({ onClose, onSubmit, feedback, error }) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="priority-modal" role="dialog" aria-modal="true" aria-label="Priority support request" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-head">
+          <strong>Priority support</strong>
+          <button className="icon-button" onClick={onClose} aria-label="Close">x</button>
+        </div>
+        <div className="priority-modal-body">
+          {feedback ? (
+            <div className="priority-success-state" role="status" aria-live="polite">
+              <div className="success-mark">✓</div>
+              <h2>Request sent</h2>
+              <p>{feedback || "Priority support request sent. We will follow up shortly."}</p>
+              <button className="button primary full" onClick={onClose}>Done</button>
+            </div>
+          ) : (
+            <>
+              <p className="eyebrow">Fast-track request</p>
+              <h2>Tell us what you need.</h2>
+              <p className="property-meta">Share the essentials and we will prioritize matching homes for your timeline.</p>
+              <PriorityRequestForm onSubmit={onSubmit} error={error} />
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -667,7 +722,7 @@ function HowItWorks() {
   );
 }
 
-function UrgentHelp({ onSubmit, feedback }) {
+function UrgentHelp({ onOpen }) {
   return (
     <section className="section" id="urgent">
       <div className="container request-wrap">
@@ -676,21 +731,35 @@ function UrgentHelp({ onSubmit, feedback }) {
           <h2 className="section-title">Need a home this week?</h2>
           <p className="hero-copy">Send your core requirements and the ops team can prioritize matching inventory.</p>
         </div>
-        <div className="request-card">
-          <form onSubmit={onSubmit}>
-            <label className="field"><span>Name</span><input name="name" required placeholder="Your name" /></label>
-            <label className="field"><span>Phone</span><input name="phone" required placeholder="+91 98765 43210" /></label>
-            <div className="range-inputs">
-              <label className="field"><span>Preferred locality</span><input name="preferred_locality" required placeholder="Indiranagar" /></label>
-              <label className="field"><span>Move by</span><input name="move_by" type="date" /></label>
-            </div>
-            <label className="field"><span>Budget and notes</span><textarea name="notes" placeholder="Example: 1 BHK, under Rs 25k, close to metro" /></label>
-            {feedback && <div className="form-feedback success">{feedback}</div>}
-            <button className="button primary" type="submit">Send request</button>
-          </form>
+        <div className="request-card urgent-launch-card">
+          <p className="eyebrow">Fast track</p>
+          <h3>Open the priority form.</h3>
+          <p>Use this when your move-in timeline is tight and you want us to prioritize matches.</p>
+          <button className="button primary full" onClick={onOpen}>Open priority form</button>
         </div>
       </div>
     </section>
+  );
+}
+
+function PriorityRequestForm({ onSubmit, error }) {
+  return (
+    <form className="priority-request-form" onSubmit={onSubmit}>
+      <label className="field"><span>Name</span><input name="name" required placeholder="Your name" /></label>
+      <label className="field"><span>Phone</span><input name="phone" required placeholder="+91 98765 43210" /></label>
+      <div className="range-inputs">
+        <label className="field"><span>Preferred locality</span><input name="preferred_locality" required placeholder="Indiranagar" /></label>
+        <label className="field"><span>Move by</span><input name="move_by" type="date" /></label>
+      </div>
+      <label className="field"><span>Budget and notes</span><textarea name="notes" placeholder="Example: 1 BHK, under Rs 25k, close to metro" /></label>
+      {error && (
+        <div className="priority-confirmation priority-confirmation--error" role="alert">
+          <strong>Could not send request</strong>
+          <span>{error}</span>
+        </div>
+      )}
+      <button className="button primary" type="submit">Send request</button>
+    </form>
   );
 }
 

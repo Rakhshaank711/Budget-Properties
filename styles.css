@@ -573,6 +573,56 @@ h1 em {
   gap: 13px;
 }
 
+.urgent-launch-card {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.urgent-launch-card h3 {
+  font-family: var(--serif);
+  font-size: 1.6rem;
+}
+
+.priority-modal {
+  width: min(620px, calc(100% - 32px));
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: auto;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .22);
+}
+
+.priority-modal-body {
+  display: grid;
+  gap: 14px;
+  padding: 22px;
+}
+
+.priority-modal-body h2 {
+  font-size: 2.1rem;
+}
+
+.priority-request-form {
+  display: grid;
+  gap: 13px;
+  margin-top: 6px;
+}
+
+.priority-success-state {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  padding: 20px 0 4px;
+  text-align: center;
+}
+
+.priority-success-state p {
+  max-width: 34ch;
+  color: var(--muted);
+  margin: 0 0 6px;
+}
+
 .form-feedback {
   border-radius: 10px;
   padding: 11px 13px;
@@ -584,6 +634,40 @@ h1 em {
   border: 1px solid #b7e2c3;
   background: #edf9f1;
   color: var(--success);
+}
+
+.priority-confirmation {
+  display: grid;
+  gap: 4px;
+  border: 1px solid #9bd4ad;
+  border-left: 5px solid var(--success);
+  border-radius: 12px;
+  padding: 14px 15px;
+  background: #edf9f1;
+  color: var(--success);
+  box-shadow: 0 8px 24px rgba(15, 123, 62, .12);
+}
+
+.priority-confirmation strong {
+  color: var(--success);
+  font-size: 1rem;
+}
+
+.priority-confirmation span {
+  font-size: .92rem;
+  font-weight: 600;
+}
+
+.priority-confirmation--error {
+  border-color: #f2c9c3;
+  border-left-color: var(--error);
+  background: #fff8f7;
+  color: var(--error);
+  box-shadow: 0 8px 24px rgba(180, 35, 24, .1);
+}
+
+.priority-confirmation--error strong {
+  color: var(--error);
 }
 
 .toast {
@@ -626,6 +710,19 @@ h1 em {
   border-radius: 16px;
   background: #fff;
   box-shadow: 0 24px 80px rgba(0, 0, 0, .22);
+}
+
+.success-mark {
+  width: 62px;
+  height: 62px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #edf9f1;
+  border: 1px solid #b7e2c3;
+  color: var(--success);
+  font-size: 2rem;
+  font-weight: 900;
 }
 
 .modal-head {
