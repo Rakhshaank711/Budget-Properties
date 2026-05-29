@@ -240,6 +240,33 @@ h1 em {
   border-top: 1px solid var(--border);
 }
 
+.page-section {
+  min-height: 68vh;
+  padding: 48px 0 70px;
+}
+
+.page-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 18px;
+  margin-bottom: 28px;
+}
+
+.page-title {
+  font-size: clamp(2rem, 3.5vw, 3.4rem);
+}
+
+.listing-header-sub {
+  max-width: 58ch;
+  color: var(--muted);
+  margin: 12px 0 0;
+}
+
+.page-head-cta {
+  flex-shrink: 0;
+}
+
 .section-title {
   font-size: clamp(2rem, 3vw, 3rem);
   margin-bottom: 28px;
@@ -546,6 +573,19 @@ h1 em {
   gap: 13px;
 }
 
+.form-feedback {
+  border-radius: 10px;
+  padding: 11px 13px;
+  font-size: .9rem;
+  font-weight: 700;
+}
+
+.form-feedback.success {
+  border: 1px solid #b7e2c3;
+  background: #edf9f1;
+  color: var(--success);
+}
+
 .toast {
   position: fixed;
   right: 20px;
@@ -790,6 +830,16 @@ h1 em {
 
   .section {
     padding: 34px 0 44px;
+  }
+
+  .page-section {
+    padding: 28px 0 44px;
+  }
+
+  .page-head {
+    display: grid;
+    align-items: start;
+    gap: 16px;
   }
 
   .modal-backdrop {

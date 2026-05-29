@@ -103,13 +103,14 @@ const money = (value) => `Rs ${Number(value).toLocaleString("en-IN")}`;
 function App() {
   const [session, setSession] = useState(null);
   const [authOpen, setAuthOpen] = useState(false);
+  const [page, setPage] = useState("home");
   const [search, setSearch] = useState("");
   const [locality, setLocality] = useState("All");
   const [bhk, setBhk] = useState("All");
   const [maxRent, setMaxRent] = useState(50000);
   const [saved, setSaved] = useState(() => new Set());
-  const [showSaved, setShowSaved] = useState(false);
   const [selectedProperty, setSelectedProperty] = useState(null);
+  const [urgentFeedback, setUrgentFeedback] = useState("");
   const [toast, setToast] = useState("");
 
   useEffect(() => {
@@ -126,16 +127,51 @@ function App() {
     return () => listener.subscription.unsubscribe();
   }, []);
 
+  useEffect(() => {
+    if (!supabase || !session?.user?.id) {
+      setSaved(new Set());
+      setPage("home");
+      return;
+    }
+
+    let isActive = true;
+
+    async function loadSavedProperties() {
+      const { data, error } = await supabase
+        .from("saved_properties")
+        .select("property_id")
+        .eq("user_id", session.user.id);
+
+      if (!isActive) return;
+
+      if (error) {
+        notify(error.message);
+        return;
+      }
+
+      setSaved(new Set((data ?? []).map((row) => row.property_id)));
+    }
+
+    loadSavedProperties();
+
+    return () => {
+      isActive = false;
+    };
+  }, [session?.user?.id]);
+
   const results = useMemo(() => {
     return properties.filter((item) => {
       const haystack = `${item.title} ${item.locality} ${item.city} ${item.features.join(" ")}`.toLowerCase();
       const matchesSearch = haystack.includes(search.trim().toLowerCase());
       const matchesLocality = locality === "All" || item.locality === locality;
       const matchesBhk = bhk === "All" || item.bhk === bhk;
-      const matchesSaved = !showSaved || saved.has(item.id);
-      return matchesSearch && matchesLocality && matchesBhk && matchesSaved && item.rent <= maxRent;
+      return matchesSearch && matchesLocality && matchesBhk && item.rent <= maxRent;
     });
-  }, [bhk, locality, maxRent, saved, search, showSaved]);
+  }, [bhk, locality, maxRent, search]);
+
+  const savedProperties = useMemo(() => {
+    return properties.filter((property) => saved.has(property.id));
+  }, [saved]);
 
   function notify(message) {
     setToast(message);
@@ -143,33 +179,133 @@ function App() {
     notify.timer = window.setTimeout(() => setToast(""), 2400);
   }
 
-  function toggleSaved(id) {
-    setSaved((current) => {
-      const next = new Set(current);
-      if (next.has(id)) {
-        next.delete(id);
-        notify("Removed from shortlist.");
-      } else {
-        next.add(id);
-        notify("Added to shortlist.");
-      }
-      if (!next.size) setShowSaved(false);
-      return next;
-    });
-  }
-
-  function toggleSavedView() {
-    if (!saved.size) {
-      notify("No saved properties yet.");
+  async function toggleSaved(id) {
+    if (!supabase) {
+      notify("Supabase is not configured.");
       return;
     }
-    setShowSaved((current) => !current);
+
+    if (!session?.user?.id) {
+      setAuthOpen(true);
+      notify("Login to save properties.");
+      return;
+    }
+
+    if (saved.has(id)) {
+      const { error } = await supabase
+        .from("saved_properties")
+        .delete()
+        .eq("user_id", session.user.id)
+        .eq("property_id", id);
+
+      if (error) {
+        notify(error.message);
+        return;
+      }
+
+      setSaved((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        if (!next.size) setPage("home");
+        return next;
+      });
+      notify("Removed from shortlist.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("saved_properties")
+      .insert({ user_id: session.user.id, property_id: id });
+
+    if (error) {
+      notify(error.message);
+      return;
+    }
+
+    setSaved((current) => new Set(current).add(id));
+    notify("Added to shortlist.");
   }
 
-  function submitUrgentRequest(event) {
+  function openSavedPage() {
+    if (!session?.user?.id) {
+      setAuthOpen(true);
+      notify("Login to view saved properties.");
+      return;
+    }
+    setPage("saved");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function openHome(sectionId) {
+    setPage("home");
+    window.setTimeout(() => {
+      if (sectionId) {
+        document.getElementById(sectionId)?.scrollIntoView({ behavior: "smooth" });
+      } else {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+    }, 0);
+  }
+
+  async function submitUrgentRequest(event) {
     event.preventDefault();
+    setUrgentFeedback("");
+    if (!supabase) {
+      notify("Supabase is not configured.");
+      return;
+    }
+
+    if (!session?.user?.id) {
+      setAuthOpen(true);
+      notify("Login to send an urgent request.");
+      return;
+    }
+
+    const formData = new FormData(event.currentTarget);
+    const { error } = await supabase.from("urgent_help_requests").insert({
+      user_id: session.user.id,
+      name: formData.get("name"),
+      phone: formData.get("phone"),
+      preferred_locality: formData.get("preferred_locality"),
+      move_by: formData.get("move_by") || null,
+      notes: formData.get("notes")
+    });
+
+    if (error) {
+      notify(error.message);
+      return;
+    }
+
     event.currentTarget.reset();
+    setUrgentFeedback("Urgent help request sent. We will follow up shortly.");
     notify("Urgent help request sent.");
+  }
+
+  async function requestVisit(property) {
+    if (!supabase) {
+      notify("Supabase is not configured.");
+      return;
+    }
+
+    if (!session?.user?.id) {
+      setAuthOpen(true);
+      notify("Login to request a visit.");
+      return;
+    }
+
+    const { error } = await supabase.from("visit_requests").insert({
+      user_id: session.user.id,
+      property_id: property.id,
+      property_title: property.title,
+      message: `Requested from ${property.locality} listing.`
+    });
+
+    if (error) {
+      notify(error.message);
+      return;
+    }
+
+    notify("Visit request captured.");
   }
 
   async function signOut() {
@@ -180,6 +316,7 @@ function App() {
       return;
     }
     setAuthOpen(false);
+    setPage("home");
     notify("Signed out.");
   }
 
@@ -191,10 +328,10 @@ function App() {
         <div className="container topbar-inner">
           <div className="brand">Budget Properties</div>
           <nav className="nav" aria-label="Primary navigation">
-            <a className="active mobile-keep" href="#properties">Properties</a>
-            <a href="#how">How it works</a>
-            <a href="#urgent">Urgent help</a>
-            <button className={showSaved ? "active" : ""} onClick={toggleSavedView}>Saved {saved.size}</button>
+            <button className={page === "home" ? "active mobile-keep" : "mobile-keep"} onClick={() => openHome("properties")}>Properties</button>
+            <button onClick={() => openHome("how")}>How it works</button>
+            <button onClick={() => openHome("urgent")}>Urgent help</button>
+            <button className={page === "saved" ? "active" : ""} onClick={openSavedPage}>Saved {saved.size}</button>
             {session ? (
               <button onClick={signOut}>{userLabel} · Sign out</button>
             ) : (
@@ -205,47 +342,50 @@ function App() {
       </header>
 
       <main>
-        <Hero />
-        <section className="section" id="properties">
-          <div className="container">
-            <p className="eyebrow">Inventory</p>
-            <h2 className="section-title">{showSaved ? "Your shortlisted homes." : "Browse available homes."}</h2>
+        {page === "home" ? (
+          <>
+            <Hero />
+            <section className="section" id="properties">
+              <div className="container">
+                <p className="eyebrow">Inventory</p>
+                <h2 className="section-title">Browse available homes.</h2>
 
-            <PropertyFilters
-              search={search}
-              setSearch={setSearch}
-              locality={locality}
-              setLocality={setLocality}
-              bhk={bhk}
-              setBhk={setBhk}
-              maxRent={maxRent}
-              setMaxRent={setMaxRent}
-              count={results.length}
-            />
+                <PropertyFilters
+                  search={search}
+                  setSearch={setSearch}
+                  locality={locality}
+                  setLocality={setLocality}
+                  bhk={bhk}
+                  setBhk={setBhk}
+                  maxRent={maxRent}
+                  setMaxRent={setMaxRent}
+                  count={results.length}
+                />
 
-            <div className={results.length ? "properties-grid" : ""}>
-              {results.length ? (
-                results.map((property) => (
-                  <PropertyCard
-                    key={property.id}
-                    property={property}
-                    saved={saved.has(property.id)}
-                    onSave={() => toggleSaved(property.id)}
-                    onDetails={() => setSelectedProperty(property)}
-                    onVisit={() => notify("Visit request captured.")}
-                  />
-                ))
-              ) : (
-                <div className="empty">
-                  {showSaved ? "No saved homes match these filters yet." : "No homes match these filters. Increase the budget or clear a filter."}
-                </div>
-              )}
-            </div>
-          </div>
-        </section>
+                <PropertyGrid
+                  propertiesToShow={results}
+                  saved={saved}
+                  onSave={toggleSaved}
+                  onDetails={setSelectedProperty}
+                  onVisit={requestVisit}
+                  emptyText="No homes match these filters. Increase the budget or clear a filter."
+                />
+              </div>
+            </section>
 
-        <HowItWorks />
-        <UrgentHelp onSubmit={submitUrgentRequest} />
+            <HowItWorks />
+            <UrgentHelp onSubmit={submitUrgentRequest} feedback={urgentFeedback} />
+          </>
+        ) : (
+          <SavedPropertiesPage
+            propertiesToShow={savedProperties}
+            saved={saved}
+            onBack={() => openHome("properties")}
+            onSave={toggleSaved}
+            onDetails={setSelectedProperty}
+            onVisit={requestVisit}
+          />
+        )}
       </main>
 
       <footer className="footer">
@@ -261,7 +401,7 @@ function App() {
           saved={saved.has(selectedProperty.id)}
           onClose={() => setSelectedProperty(null)}
           onSave={() => toggleSaved(selectedProperty.id)}
-          onVisit={() => notify("Visit request captured.")}
+          onVisit={() => requestVisit(selectedProperty)}
         />
       )}
 
@@ -433,6 +573,53 @@ function PropertyFilters({ search, setSearch, locality, setLocality, bhk, setBhk
   );
 }
 
+function PropertyGrid({ propertiesToShow, saved, onSave, onDetails, onVisit, emptyText }) {
+  return (
+    <div className={propertiesToShow.length ? "properties-grid" : ""}>
+      {propertiesToShow.length ? (
+        propertiesToShow.map((property) => (
+          <PropertyCard
+            key={property.id}
+            property={property}
+            saved={saved.has(property.id)}
+            onSave={() => onSave(property.id)}
+            onDetails={() => onDetails(property)}
+            onVisit={() => onVisit(property)}
+          />
+        ))
+      ) : (
+        <div className="empty">{emptyText}</div>
+      )}
+    </div>
+  );
+}
+
+function SavedPropertiesPage({ propertiesToShow, saved, onBack, onSave, onDetails, onVisit }) {
+  return (
+    <section className="page-section">
+      <div className="container">
+        <div className="page-head">
+          <div>
+            <p className="eyebrow">Shortlist</p>
+            <h1 className="page-title">Your saved properties.</h1>
+            <p className="listing-header-sub">Homes you have saved stay here across devices while you are logged in.</p>
+          </div>
+          <button className="button ghost page-head-cta" onClick={onBack}>Browse more</button>
+        </div>
+
+        <PropertyGrid
+          propertiesToShow={propertiesToShow}
+          saved={saved}
+          onSave={onSave}
+          onDetails={onDetails}
+          onVisit={onVisit}
+          emptyText="No saved properties yet. Browse properties and save homes you like."
+        />
+      </div>
+    </section>
+  );
+}
+
 function PropertyCard({ property, saved, onSave, onDetails, onVisit }) {
   return (
     <article className="property-card">
@@ -480,7 +667,7 @@ function HowItWorks() {
   );
 }
 
-function UrgentHelp({ onSubmit }) {
+function UrgentHelp({ onSubmit, feedback }) {
   return (
     <section className="section" id="urgent">
       <div className="container request-wrap">
@@ -491,14 +678,15 @@ function UrgentHelp({ onSubmit }) {
         </div>
         <div className="request-card">
           <form onSubmit={onSubmit}>
-            <label className="field"><span>Name</span><input required placeholder="Your name" /></label>
-            <label className="field"><span>Phone</span><input required placeholder="+91 98765 43210" /></label>
+            <label className="field"><span>Name</span><input name="name" required placeholder="Your name" /></label>
+            <label className="field"><span>Phone</span><input name="phone" required placeholder="+91 98765 43210" /></label>
             <div className="range-inputs">
-              <label className="field"><span>Preferred locality</span><input required placeholder="Indiranagar" /></label>
-              <label className="field"><span>Move by</span><input type="date" /></label>
+              <label className="field"><span>Preferred locality</span><input name="preferred_locality" required placeholder="Indiranagar" /></label>
+              <label className="field"><span>Move by</span><input name="move_by" type="date" /></label>
             </div>
-            <label className="field"><span>Budget and notes</span><textarea placeholder="Example: 1 BHK, under Rs 25k, close to metro" /></label>
+            <label className="field"><span>Budget and notes</span><textarea name="notes" placeholder="Example: 1 BHK, under Rs 25k, close to metro" /></label>
             <button className="button primary" type="submit">Send request</button>
+            {feedback && <div className="form-feedback success">{feedback}</div>}
           </form>
         </div>
       </div>
