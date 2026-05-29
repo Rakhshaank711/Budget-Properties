@@ -99,11 +99,27 @@ const properties = [
 const localities = ["All", ...new Set(properties.map((item) => item.locality))];
 const bhks = ["All", "1 RK", "1 BHK", "2 BHK", "3 BHK"];
 const money = (value) => `Rs ${Number(value).toLocaleString("en-IN")}`;
+const validPages = new Set(["home", "saved", "account"]);
+
+function getInitialPage() {
+  const hashPage = window.location.hash.replace("#", "");
+  return validPages.has(hashPage) ? hashPage : "home";
+}
+
+function setHash(hash) {
+  if (window.location.hash === hash) return;
+  window.history.pushState(null, "", hash);
+}
 
 function App() {
   const [session, setSession] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
-  const [page, setPage] = useState("home");
+  const [page, setPage] = useState(getInitialPage);
+  const [profile, setProfile] = useState(null);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [visitRequests, setVisitRequests] = useState([]);
+  const [priorityRequests, setPriorityRequests] = useState([]);
   const [search, setSearch] = useState("");
   const [locality, setLocality] = useState("All");
   const [bhk, setBhk] = useState("All");
@@ -120,46 +136,102 @@ function App() {
 
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session ?? null);
+      setAuthReady(true);
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
+      setAuthReady(true);
     });
 
     return () => listener.subscription.unsubscribe();
   }, []);
 
   useEffect(() => {
+    function syncPageFromHash() {
+      const hashPage = window.location.hash.replace("#", "");
+      if (validPages.has(hashPage)) {
+        setPage(hashPage);
+      } else if (["properties", "how", "urgent"].includes(hashPage)) {
+        setPage("home");
+      } else if (!hashPage) {
+        setPage("home");
+      }
+    }
+
+    window.addEventListener("hashchange", syncPageFromHash);
+    return () => window.removeEventListener("hashchange", syncPageFromHash);
+  }, []);
+
+  useEffect(() => {
+    if (!authReady) return;
+
     if (!supabase || !session?.user?.id) {
       setSaved(new Set());
-      setPage("home");
+      setProfile(null);
+      setVisitRequests([]);
+      setPriorityRequests([]);
+      if (page !== "home") {
+        setPage("home");
+        window.history.replaceState(null, "", "#home");
+      }
       return;
     }
 
     let isActive = true;
 
-    async function loadSavedProperties() {
-      const { data, error } = await supabase
-        .from("saved_properties")
-        .select("property_id")
-        .eq("user_id", session.user.id);
+    async function loadAccountData() {
+      setProfileLoading(true);
+      const [savedResult, profileResult, visitResult, priorityResult] = await Promise.all([
+        supabase
+          .from("saved_properties")
+          .select("property_id")
+          .eq("user_id", session.user.id),
+        supabase
+          .from("profiles")
+          .select("id, full_name, email, phone, city, state, role")
+          .eq("id", session.user.id)
+          .maybeSingle(),
+        supabase
+          .from("visit_requests")
+          .select("id, property_id, property_title, status, created_at")
+          .eq("user_id", session.user.id)
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("urgent_help_requests")
+          .select("id, preferred_locality, move_by, status, created_at")
+          .eq("user_id", session.user.id)
+          .order("created_at", { ascending: false })
+      ]);
 
       if (!isActive) return;
 
-      if (error) {
-        notify(error.message);
-        return;
-      }
+      setProfileLoading(false);
 
-      setSaved(new Set((data ?? []).map((row) => row.property_id)));
+      const firstError = savedResult.error || profileResult.error || visitResult.error || priorityResult.error;
+      if (firstError) notify(firstError.message);
+
+      setSaved(new Set((savedResult.data ?? []).map((row) => row.property_id)));
+      setProfile(profileResult.data ?? {
+        id: session.user.id,
+        full_name: session.user.user_metadata?.full_name || session.user.user_metadata?.name || "",
+        email: session.user.email || "",
+        phone: "",
+        city: "",
+        state: "",
+        role: "user"
+      });
+      setVisitRequests(visitResult.data ?? []);
+      setPriorityRequests(priorityResult.data ?? []);
     }
 
-    loadSavedProperties();
+    loadAccountData();
 
     return () => {
+      setProfileLoading(false);
       isActive = false;
     };
-  }, [session?.user?.id]);
+  }, [authReady, session?.user?.id]);
 
   const results = useMemo(() => {
     return properties.filter((item) => {
@@ -235,11 +307,24 @@ function App() {
       return;
     }
     setPage("saved");
+    setHash("#saved");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  function openHome(sectionId) {
+  function openAccountPage() {
+    if (!session?.user?.id) {
+      setAuthOpen(true);
+      notify("Login to view your account.");
+      return;
+    }
+    setPage("account");
+    setHash("#account");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+function openHome(sectionId) {
     setPage("home");
+    setHash(sectionId ? `#${sectionId}` : "#home");
     window.setTimeout(() => {
       if (sectionId) {
         document.getElementById(sectionId)?.scrollIntoView({ behavior: "smooth" });
@@ -287,6 +372,88 @@ function App() {
     event.currentTarget.reset();
     notify("Priority support request sent.", 6000);
     return true;
+  }
+
+  async function saveProfile(nextProfile) {
+    if (!supabase || !session?.user?.id) {
+      notify("Login to update your profile.");
+      return false;
+    }
+
+    const payload = {
+      id: session.user.id,
+      full_name: nextProfile.full_name || null,
+      email: nextProfile.email || session.user.email || null,
+      phone: nextProfile.phone || null,
+      city: nextProfile.city || null,
+      state: nextProfile.state || null
+    };
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .upsert(payload)
+      .select("id, full_name, email, phone, city, state, role")
+      .single();
+
+    if (error) {
+      notify(error.message);
+      return false;
+    }
+
+    setProfile(data);
+    notify("Profile updated.");
+    return true;
+  }
+
+  async function deletePriorityRequest(id) {
+    if (!supabase || !session?.user?.id) {
+      notify("Login to delete priority requests.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("urgent_help_requests")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", session.user.id);
+
+    if (error) {
+      notify(error.message);
+      return;
+    }
+
+    setPriorityRequests((current) => current.filter((request) => request.id !== id));
+    notify("Priority request deleted.");
+  }
+
+  function viewRequestProperty(propertyId) {
+    const property = properties.find((item) => item.id === propertyId);
+    if (!property) {
+      notify("This property is no longer available.");
+      return;
+    }
+    setSelectedProperty(property);
+  }
+
+  async function deleteVisitRequest(id) {
+    if (!supabase || !session?.user?.id) {
+      notify("Login to delete visit requests.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("visit_requests")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", session.user.id);
+
+    if (error) {
+      notify(error.message);
+      return;
+    }
+
+    setVisitRequests((current) => current.filter((request) => request.id !== id));
+    notify("Visit request deleted.");
   }
 
   async function requestVisit(property) {
@@ -341,7 +508,10 @@ function App() {
             <button onClick={() => openHome("urgent")}>Urgent help</button>
             <button className={page === "saved" ? "active" : ""} onClick={openSavedPage}>Saved {saved.size}</button>
             {session ? (
-              <button onClick={signOut}>{userLabel} · Sign out</button>
+              <>
+                <button className={page === "account" ? "active" : ""} onClick={openAccountPage}>Account</button>
+                <button onClick={signOut}>{userLabel} - Sign out</button>
+              </>
             ) : (
               <button onClick={() => setAuthOpen(true)}>Login</button>
             )}
@@ -388,7 +558,7 @@ function App() {
               setPriorityFormOpen(true);
             }} />
           </>
-        ) : (
+        ) : page === "saved" ? (
           <SavedPropertiesPage
             propertiesToShow={savedProperties}
             saved={saved}
@@ -396,6 +566,17 @@ function App() {
             onSave={toggleSaved}
             onDetails={setSelectedProperty}
             onVisit={requestVisit}
+          />
+        ) : (
+          <AccountPage
+            profile={profile}
+            loading={profileLoading}
+            visitRequests={visitRequests}
+            priorityRequests={priorityRequests}
+            onSaveProfile={saveProfile}
+            onDeletePriorityRequest={deletePriorityRequest}
+            onViewVisitProperty={viewRequestProperty}
+            onDeleteVisitRequest={deleteVisitRequest}
           />
         )}
       </main>
@@ -675,6 +856,172 @@ function SavedPropertiesPage({ propertiesToShow, saved, onBack, onSave, onDetail
   );
 }
 
+function AccountPage({
+  profile,
+  loading,
+  visitRequests,
+  priorityRequests,
+  onSaveProfile,
+  onDeletePriorityRequest,
+  onViewVisitProperty,
+  onDeleteVisitRequest
+}) {
+  const [form, setForm] = useState({
+    full_name: "",
+    email: "",
+    phone: "",
+    city: "",
+    state: ""
+  });
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setForm({
+      full_name: profile?.full_name || "",
+      email: profile?.email || "",
+      phone: profile?.phone || "",
+      city: profile?.city || "",
+      state: profile?.state || ""
+    });
+  }, [profile]);
+
+  function updateField(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  async function submitProfile(event) {
+    event.preventDefault();
+    setSaving(true);
+    await onSaveProfile(form);
+    setSaving(false);
+  }
+
+  return (
+    <section className="page-section">
+      <div className="container">
+        <div className="page-head">
+          <div>
+            <p className="eyebrow">Account</p>
+            <h1 className="page-title">Your renter workspace.</h1>
+            <p className="listing-header-sub">Manage your contact details and review the requests you have sent.</p>
+          </div>
+        </div>
+
+        <div className="account-grid">
+          <form className="account-card" onSubmit={submitProfile}>
+            <div className="section-title-row">
+              <div>
+                <h3>Profile details</h3>
+                <p>These details help us coordinate visits and follow-ups.</p>
+              </div>
+            </div>
+
+            {loading ? (
+              <div className="empty">Loading account...</div>
+            ) : (
+              <>
+                <div className="form-stack">
+                  <label className="field">
+                    <span>Full name</span>
+                    <input value={form.full_name} onChange={(event) => updateField("full_name", event.target.value)} placeholder="Your name" />
+                  </label>
+                  <label className="field">
+                    <span>Email</span>
+                    <input type="email" value={form.email} onChange={(event) => updateField("email", event.target.value)} placeholder="you@example.com" />
+                  </label>
+                  <label className="field">
+                    <span>Phone</span>
+                    <input value={form.phone} onChange={(event) => updateField("phone", event.target.value)} placeholder="+91 98765 43210" />
+                  </label>
+                  <div className="range-inputs">
+                    <label className="field">
+                      <span>City</span>
+                      <input value={form.city} onChange={(event) => updateField("city", event.target.value)} placeholder="Bengaluru" />
+                    </label>
+                    <label className="field">
+                      <span>State</span>
+                      <input value={form.state} onChange={(event) => updateField("state", event.target.value)} placeholder="Karnataka" />
+                    </label>
+                  </div>
+                </div>
+                <button className="button primary" type="submit" disabled={saving}>{saving ? "Saving..." : "Save profile"}</button>
+              </>
+            )}
+          </form>
+
+          <div className="account-stack">
+            <RequestHistory
+              title="Visit requests"
+              emptyText="No visit requests yet."
+              rows={visitRequests}
+              renderRow={(row) => (
+                <>
+                  <div>
+                    <strong>{row.property_title || row.property_id}</strong>
+                    <span>{formatRequestDate(row.created_at)} - {row.status}</span>
+                  </div>
+                  <div className="request-row-actions">
+                    <button className="request-action-btn" onClick={() => onViewVisitProperty(row.property_id)}>View</button>
+                    <button className="request-delete-btn" onClick={() => onDeleteVisitRequest(row.id)}>Delete</button>
+                  </div>
+                </>
+              )}
+            />
+            <RequestHistory
+              title="Priority requests"
+              emptyText="No priority requests yet."
+              rows={priorityRequests}
+              renderRow={(row) => (
+                <>
+                  <div>
+                    <strong>{row.preferred_locality || "Priority request"}</strong>
+                    <span>{formatRequestDate(row.created_at)} - {row.status}{row.move_by ? ` - Move by ${row.move_by}` : ""}</span>
+                  </div>
+                  <div className="request-row-actions">
+                    <button className="request-delete-btn" onClick={() => onDeletePriorityRequest(row.id)}>Delete</button>
+                  </div>
+                </>
+              )}
+            />
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function RequestHistory({ title, rows, emptyText, renderRow }) {
+  return (
+    <div className="account-card request-history-card">
+      <div className="section-title-row">
+        <div>
+          <h3>{title}</h3>
+        </div>
+      </div>
+      {rows.length ? (
+        <div className="request-history-list">
+          {rows.map((row) => (
+            <div className="request-history-row" key={row.id}>
+              {renderRow(row)}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="empty compact-empty">{emptyText}</div>
+      )}
+    </div>
+  );
+}
+
+function formatRequestDate(value) {
+  if (!value) return "Unknown date";
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric"
+  }).format(new Date(value));
+}
+
 function PropertyCard({ property, saved, onSave, onDetails, onVisit }) {
   return (
     <article className="property-card">
@@ -797,3 +1144,4 @@ function PropertyModal({ property, saved, onClose, onSave, onVisit }) {
 }
 
 createRoot(document.getElementById("root")).render(<App />);
+

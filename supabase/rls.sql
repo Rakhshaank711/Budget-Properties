@@ -56,6 +56,13 @@ for insert
 to authenticated
 with check (auth.uid() = user_id);
 
+drop policy if exists "Users can delete own visit requests" on public.visit_requests;
+create policy "Users can delete own visit requests"
+on public.visit_requests
+for delete
+to authenticated
+using (auth.uid() = user_id);
+
 drop policy if exists "Users can read own urgent requests" on public.urgent_help_requests;
 create policy "Users can read own urgent requests"
 on public.urgent_help_requests
@@ -70,3 +77,9 @@ for insert
 to authenticated
 with check (auth.uid() = user_id);
 
+drop policy if exists "Users can delete own urgent requests" on public.urgent_help_requests;
+create policy "Users can delete own urgent requests"
+on public.urgent_help_requests
+for delete
+to authenticated
+using (auth.uid() = user_id);
