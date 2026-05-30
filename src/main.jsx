@@ -4,99 +4,6 @@ import "mapbox-gl/dist/mapbox-gl.css";
 import { isSupabaseConfigured, supabase } from "./supabaseClient";
 import "../styles.css";
 
-const properties = [
-  {
-    id: "bp-101",
-    title: "Sunlit Studio near Metro",
-    locality: "Indiranagar",
-    city: "Bengaluru",
-    bhk: "1 BHK",
-    rent: 18500,
-    deposit: 50000,
-    area: 520,
-    type: "Studio",
-    status: "Ready",
-    image: "https://images.unsplash.com/photo-1505693416388-ac5ce068fe85?auto=format&fit=crop&w=1000&q=80",
-    features: ["Furnished", "Metro 700m", "No brokerage"],
-    description: "A compact, bright studio for a renter who wants a clean commute and a simple move-in."
-  },
-  {
-    id: "bp-102",
-    title: "Quiet 2 BHK with Balcony",
-    locality: "HSR Layout",
-    city: "Bengaluru",
-    bhk: "2 BHK",
-    rent: 32000,
-    deposit: 90000,
-    area: 980,
-    type: "Apartment",
-    status: "Verified",
-    image: "https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?auto=format&fit=crop&w=1000&q=80",
-    features: ["Family friendly", "Balcony", "Lift"],
-    description: "A practical two bedroom home in a calm lane with daily essentials nearby."
-  },
-  {
-    id: "bp-103",
-    title: "Managed Co-living Room",
-    locality: "Koramangala",
-    city: "Bengaluru",
-    bhk: "1 RK",
-    rent: 14500,
-    deposit: 25000,
-    area: 260,
-    type: "Co-living",
-    status: "Hot",
-    image: "https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?auto=format&fit=crop&w=1000&q=80",
-    features: ["Meals option", "Wi-Fi", "Housekeeping"],
-    description: "A managed room close to cafes, offices and nightlife, designed for fast move-ins."
-  },
-  {
-    id: "bp-104",
-    title: "Spacious 3 BHK for Sharing",
-    locality: "Whitefield",
-    city: "Bengaluru",
-    bhk: "3 BHK",
-    rent: 47000,
-    deposit: 130000,
-    area: 1460,
-    type: "Apartment",
-    status: "Ready",
-    image: "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1000&q=80",
-    features: ["Gated society", "Pool", "Power backup"],
-    description: "A larger apartment for colleagues or a family who want amenities and space."
-  },
-  {
-    id: "bp-105",
-    title: "Minimal 1 BHK in Gated Block",
-    locality: "Bellandur",
-    city: "Bengaluru",
-    bhk: "1 BHK",
-    rent: 24000,
-    deposit: 70000,
-    area: 650,
-    type: "Apartment",
-    status: "Verified",
-    image: "https://images.unsplash.com/photo-1560448075-bb485b067938?auto=format&fit=crop&w=1000&q=80",
-    features: ["Security", "Gym", "Covered parking"],
-    description: "A polished one bedroom home in a managed community near tech parks."
-  },
-  {
-    id: "bp-106",
-    title: "Budget Room near College",
-    locality: "BTM Layout",
-    city: "Bengaluru",
-    bhk: "1 RK",
-    rent: 9800,
-    deposit: 18000,
-    area: 210,
-    type: "Room",
-    status: "Budget",
-    image: "https://images.unsplash.com/photo-1631049307264-da0ec9d70304?auto=format&fit=crop&w=1000&q=80",
-    features: ["Low deposit", "Shared kitchen", "Bus stop 200m"],
-    description: "A simple budget room for students or first-time renters watching monthly spend."
-  }
-];
-
 const bhks = ["All", "1 RK", "1 BHK", "2 BHK", "3 BHK"];
 const sortOptions = [
   { value: "recommended", label: "Recommended" },
@@ -106,7 +13,7 @@ const sortOptions = [
   { value: "deposit-low", label: "Lowest deposit" }
 ];
 const money = (value) => `Rs ${Number(value).toLocaleString("en-IN")}`;
-const validPages = new Set(["home", "saved", "account", "manage"]);
+const validPages = new Set(["home", "properties", "saved", "account", "manage"]);
 const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN;
 const propertyImageBucket = "property-images";
 const supportedImageTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
@@ -463,7 +370,7 @@ function App() {
   const [profileLoading, setProfileLoading] = useState(false);
   const [visitRequests, setVisitRequests] = useState([]);
   const [priorityRequests, setPriorityRequests] = useState([]);
-  const [inventory, setInventory] = useState(properties);
+  const [inventory, setInventory] = useState([]);
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [locality, setLocality] = useState("All");
@@ -577,7 +484,7 @@ function App() {
       setProfile(null);
       setVisitRequests([]);
       setPriorityRequests([]);
-      if (page !== "home") {
+      if (["saved", "account", "manage"].includes(page)) {
         setPage("home");
         window.history.replaceState(null, "", "#home");
       }
@@ -645,6 +552,11 @@ function App() {
     const allFeatures = inventory.flatMap((item) => item.features || []).filter(Boolean);
     return ["All", ...new Set(allFeatures)];
   }, [inventory]);
+  const startingRent = useMemo(() => {
+    const rents = inventory.map((property) => Number(property.rent)).filter((rent) => Number.isFinite(rent) && rent > 0);
+    return rents.length ? Math.min(...rents) : 0;
+  }, [inventory]);
+  const mappedHomes = useMemo(() => propertiesWithCoordinates(inventory).length, [inventory]);
 
   const results = useMemo(() => {
     const searchTerms = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -727,7 +639,6 @@ function App() {
       setSaved((current) => {
         const next = new Set(current);
         next.delete(id);
-        if (!next.size) setPage("home");
         return next;
       });
       notify("Removed from shortlist.");
@@ -758,6 +669,12 @@ function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  function openPropertiesPage() {
+    setPage("properties");
+    setHash("#properties");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   function openAccountPage() {
     if (!session?.user?.id) {
       setAuthOpen(true);
@@ -784,7 +701,7 @@ function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-function openHome(sectionId) {
+  function openHome(sectionId) {
     setPage("home");
     setHash(sectionId ? `#${sectionId}` : "#home");
     window.setTimeout(() => {
@@ -1114,8 +1031,7 @@ function openHome(sectionId) {
           <div className="brand">Budget Properties</div>
           <nav className="nav" aria-label="Primary navigation">
             <div className="nav-main">
-              <button className={page === "home" ? "active mobile-keep" : "mobile-keep"} onClick={() => openHome("properties")}>Properties</button>
-              <button onClick={() => setHowModalOpen(true)}>How it works</button>
+              <button className={page === "properties" ? "active mobile-keep" : "mobile-keep"} onClick={openPropertiesPage}>Properties</button>
               <button onClick={() => openHome("urgent")}>Urgent help</button>
               <button className={page === "saved" ? "active" : ""} onClick={openSavedPage}>Saved <span className="nav-count">{saved.size}</span></button>
               {canManageProperties && <button className={page === "manage" ? "active" : ""} onClick={openManagePage}>Manage</button>}
@@ -1157,59 +1073,59 @@ function openHome(sectionId) {
       <main>
         {page === "home" ? (
           <>
-            <Hero />
-            <section className="section" id="properties">
-              <div className="container">
-                <p className="eyebrow">Inventory</p>
-                <h2 className="section-title">Browse available homes.</h2>
+            <Hero onBrowse={openPropertiesPage} liveHomes={inventory.length} startingRent={startingRent} mappedHomes={mappedHomes} />
+            <HomePropertyPreview
+              propertiesToShow={results.slice(0, 4)}
+              totalCount={results.length}
+              saved={saved}
+              onBrowse={openPropertiesPage}
+              onSave={toggleSaved}
+              onDetails={setSelectedProperty}
+              onVisit={requestVisit}
+              emptyText={inventoryLoading ? "Loading properties..." : "No homes available yet."}
+            />
 
-                <PropertyFilters
-                  search={search}
-                  setSearch={setSearch}
-                  locality={locality}
-                  setLocality={setLocality}
-                  localities={localities}
-                  bhk={bhk}
-                  setBhk={setBhk}
-                  maxRent={maxRent}
-                  setMaxRent={setMaxRent}
-                  propertyType={propertyType}
-                  setPropertyType={setPropertyType}
-                  propertyTypes={propertyTypes}
-                  amenity={amenity}
-                  setAmenity={setAmenity}
-                  amenities={amenities}
-                  mappedOnly={mappedOnly}
-                  setMappedOnly={setMappedOnly}
-                  sortBy={sortBy}
-                  setSortBy={setSortBy}
-                  count={results.length}
-                  onClear={clearPropertyFilters}
-                />
-
-                <SplitPropertyExplorer
-                  propertiesToShow={results}
-                  saved={saved}
-                  onSave={toggleSaved}
-                  onDetails={setSelectedProperty}
-                  onVisit={requestVisit}
-                  emptyText={inventoryLoading ? "Loading properties..." : "No homes match these filters. Increase the budget or clear a filter."}
-                />
-              </div>
-            </section>
-
-            <HowItWorks />
             <UrgentHelp onOpen={() => {
               setUrgentFeedback("");
               setUrgentError("");
               setPriorityFormOpen(true);
             }} />
           </>
+        ) : page === "properties" ? (
+          <PropertiesPage
+            search={search}
+            setSearch={setSearch}
+            locality={locality}
+            setLocality={setLocality}
+            localities={localities}
+            bhk={bhk}
+            setBhk={setBhk}
+            maxRent={maxRent}
+            setMaxRent={setMaxRent}
+            propertyType={propertyType}
+            setPropertyType={setPropertyType}
+            propertyTypes={propertyTypes}
+            amenity={amenity}
+            setAmenity={setAmenity}
+            amenities={amenities}
+            mappedOnly={mappedOnly}
+            setMappedOnly={setMappedOnly}
+            sortBy={sortBy}
+            setSortBy={setSortBy}
+            count={results.length}
+            onClear={clearPropertyFilters}
+            propertiesToShow={results}
+            saved={saved}
+            onSave={toggleSaved}
+            onDetails={setSelectedProperty}
+            onVisit={requestVisit}
+            emptyText={inventoryLoading ? "Loading properties..." : "No homes match these filters. Increase the budget or clear a filter."}
+          />
         ) : page === "saved" ? (
           <SavedPropertiesPage
             propertiesToShow={savedProperties}
             saved={saved}
-            onBack={() => openHome("properties")}
+            onBack={openPropertiesPage}
             onSave={toggleSaved}
             onDetails={setSelectedProperty}
             onVisit={requestVisit}
@@ -1419,7 +1335,7 @@ function AuthModal({ onClose, onNotify }) {
   );
 }
 
-function Hero() {
+function Hero({ onBrowse, liveHomes, startingRent, mappedHomes }) {
   return (
     <section className="hero">
       <div className="container hero-grid">
@@ -1428,18 +1344,124 @@ function Hero() {
           <h1>Find budget homes without the <em>broker chaos.</em></h1>
           <p className="hero-copy">Browse rent-ready properties, shortlist the ones that fit, and request visits with a lightweight renter workflow.</p>
           <div className="hero-actions">
-            <a className="button primary" href="#properties">Browse properties</a>
+            <button className="button primary" type="button" onClick={onBrowse}>Browse properties</button>
             <a className="button ghost" href="#urgent">Need a place fast?</a>
           </div>
         </div>
         <div className="hero-media">
           <img src="https://images.unsplash.com/photo-1600566753190-17f0baa2a6c3?auto=format&fit=crop&w=1200&q=80" alt="Modern apartment living room" />
           <div className="stat-row">
-            <div className="stat"><strong>{properties.length}</strong><span>Live homes</span></div>
-            <div className="stat"><strong>Rs 9.8k</strong><span>Starting rent</span></div>
-            <div className="stat"><strong>3</strong><span>Visit steps</span></div>
+            <div className="stat"><strong>{liveHomes}</strong><span>Live homes</span></div>
+            <div className="stat"><strong>{startingRent ? money(startingRent) : "--"}</strong><span>Starting rent</span></div>
+            <div className="stat"><strong>{mappedHomes}</strong><span>Map pins</span></div>
           </div>
         </div>
+      </div>
+    </section>
+  );
+}
+
+function HomePropertyPreview({ propertiesToShow, totalCount, saved, onBrowse, onSave, onDetails, onVisit, emptyText }) {
+  return (
+    <section className="section home-preview-section" id="preview">
+      <div className="container">
+        <div className="preview-head">
+          <div>
+            <p className="eyebrow">Featured homes</p>
+            <h2 className="section-title">Start with a few good matches.</h2>
+            <p className="listing-header-sub">A quick preview of current listings. Open the full property search for filters, map view, and all homes.</p>
+          </div>
+          <button className="button primary page-head-cta" type="button" onClick={onBrowse}>
+            View all {totalCount || ""} properties
+          </button>
+        </div>
+
+        <PropertyGrid
+          propertiesToShow={propertiesToShow}
+          saved={saved}
+          onSave={onSave}
+          onDetails={onDetails}
+          onVisit={onVisit}
+          emptyText={emptyText}
+          gridClassName="preview-grid"
+        />
+      </div>
+    </section>
+  );
+}
+
+function PropertiesPage({
+  search,
+  setSearch,
+  locality,
+  setLocality,
+  localities,
+  bhk,
+  setBhk,
+  maxRent,
+  setMaxRent,
+  propertyType,
+  setPropertyType,
+  propertyTypes,
+  amenity,
+  setAmenity,
+  amenities,
+  mappedOnly,
+  setMappedOnly,
+  sortBy,
+  setSortBy,
+  count,
+  onClear,
+  propertiesToShow,
+  saved,
+  onSave,
+  onDetails,
+  onVisit,
+  emptyText
+}) {
+  return (
+    <section className="page-section">
+      <div className="container">
+        <div className="page-head">
+          <div>
+            <p className="eyebrow">Inventory</p>
+            <h1 className="page-title">Browse available homes.</h1>
+            <p className="listing-header-sub">Use filters and the map to compare homes by budget, locality, layout, and amenities.</p>
+          </div>
+        </div>
+
+        <PropertyFilters
+          search={search}
+          setSearch={setSearch}
+          locality={locality}
+          setLocality={setLocality}
+          localities={localities}
+          bhk={bhk}
+          setBhk={setBhk}
+          maxRent={maxRent}
+          setMaxRent={setMaxRent}
+          propertyType={propertyType}
+          setPropertyType={setPropertyType}
+          propertyTypes={propertyTypes}
+          amenity={amenity}
+          setAmenity={setAmenity}
+          amenities={amenities}
+          mappedOnly={mappedOnly}
+          setMappedOnly={setMappedOnly}
+          sortBy={sortBy}
+          setSortBy={setSortBy}
+          count={count}
+          onClear={onClear}
+        />
+
+        <SplitPropertyExplorer
+          propertiesToShow={propertiesToShow}
+          saved={saved}
+          onSave={onSave}
+          onDetails={onDetails}
+          onVisit={onVisit}
+          emptyText={emptyText}
+        />
       </div>
     </section>
   );
@@ -1468,8 +1490,10 @@ function PropertyFilters({
   count,
   onClear
 }) {
+  const [filtersOpen, setFiltersOpen] = useState(false);
+
   return (
-    <div className="controls">
+    <div className={`controls ${filtersOpen ? "filters-open" : ""}`}>
       <div className="controls-top">
         <label className="search">
           <span>Where</span>
@@ -1477,75 +1501,80 @@ function PropertyFilters({
         </label>
         <div className="filter-summary">
           <span className="count-pill">{count} matches</span>
+          <button className="button ghost filter-toggle" type="button" onClick={() => setFiltersOpen((current) => !current)}>
+            {filtersOpen ? "Hide filters" : "Show filters"}
+          </button>
           <button className="button ghost filter-clear" type="button" onClick={onClear}>Reset</button>
         </div>
       </div>
 
-      <div className="select-grid">
-        <label className="field">
-          <span>Locality</span>
-          <select value={locality} onChange={(event) => setLocality(event.target.value)}>
-            {localities.map((value) => <option key={value}>{value}</option>)}
-          </select>
-        </label>
-        <label className="field">
-          <span>Layout</span>
-          <select value={bhk} onChange={(event) => setBhk(event.target.value)}>
-            {bhks.map((value) => <option key={value}>{value}</option>)}
-          </select>
-        </label>
-        <label className="field">
-          <span>Type</span>
-          <select value={propertyType} onChange={(event) => setPropertyType(event.target.value)}>
-            {propertyTypes.map((value) => <option key={value}>{value}</option>)}
-          </select>
-        </label>
-        <label className="field">
-          <span>Amenity</span>
-          <select value={amenity} onChange={(event) => setAmenity(event.target.value)}>
-            {amenities.map((value) => <option key={value}>{value}</option>)}
-          </select>
-        </label>
-        <label className="field">
-          <span>Sort</span>
-          <select value={sortBy} onChange={(event) => setSortBy(event.target.value)}>
-            {sortOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-        </label>
-        <label className="field">
-          <span>Max rent</span>
-          <input type="number" min="8000" max="60000" step="1000" value={maxRent} onChange={(event) => setMaxRent(Number(event.target.value))} />
-        </label>
-      </div>
-
-      <div className="filter-row">
-        <button className={`chip ${mappedOnly ? "active" : ""}`} type="button" onClick={() => setMappedOnly(!mappedOnly)}>
-          Map pins only
-        </button>
-        {localities.filter((value) => value !== "All").slice(0, 5).map((value) => (
-          <button className={`chip ${locality === value ? "active" : ""}`} type="button" key={value} onClick={() => setLocality(locality === value ? "All" : value)}>
-            {value}
-          </button>
-        ))}
-      </div>
-
-      <div className="range-card">
-        <div className="range-head">
-          <div>
-            <strong>Budget range</strong>
-            <p className="property-meta">Adjust the ceiling to filter affordable homes.</p>
-          </div>
-          <div className="range-values"><span>Up to {money(maxRent)}</span></div>
+      <div className="filter-panel" hidden={!filtersOpen}>
+        <div className="select-grid">
+          <label className="field">
+            <span>Locality</span>
+            <select value={locality} onChange={(event) => setLocality(event.target.value)}>
+              {localities.map((value) => <option key={value}>{value}</option>)}
+            </select>
+          </label>
+          <label className="field">
+            <span>Layout</span>
+            <select value={bhk} onChange={(event) => setBhk(event.target.value)}>
+              {bhks.map((value) => <option key={value}>{value}</option>)}
+            </select>
+          </label>
+          <label className="field">
+            <span>Type</span>
+            <select value={propertyType} onChange={(event) => setPropertyType(event.target.value)}>
+              {propertyTypes.map((value) => <option key={value}>{value}</option>)}
+            </select>
+          </label>
+          <label className="field">
+            <span>Amenity</span>
+            <select value={amenity} onChange={(event) => setAmenity(event.target.value)}>
+              {amenities.map((value) => <option key={value}>{value}</option>)}
+            </select>
+          </label>
+          <label className="field">
+            <span>Sort</span>
+            <select value={sortBy} onChange={(event) => setSortBy(event.target.value)}>
+              {sortOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+          <label className="field">
+            <span>Max rent</span>
+            <input type="number" min="8000" max="60000" step="1000" value={maxRent} onChange={(event) => setMaxRent(Number(event.target.value))} />
+          </label>
         </div>
-        <input type="range" min="8000" max="60000" step="1000" value={maxRent} onChange={(event) => setMaxRent(Number(event.target.value))} />
+
+        <div className="filter-row">
+          <button className={`chip ${mappedOnly ? "active" : ""}`} type="button" onClick={() => setMappedOnly(!mappedOnly)}>
+            Map pins only
+          </button>
+          {localities.filter((value) => value !== "All").slice(0, 5).map((value) => (
+            <button className={`chip ${locality === value ? "active" : ""}`} type="button" key={value} onClick={() => setLocality(locality === value ? "All" : value)}>
+              {value}
+            </button>
+          ))}
+        </div>
+
+        <div className="range-card">
+          <div className="range-head">
+            <div>
+              <strong>Budget range</strong>
+              <p className="property-meta">Adjust the ceiling to filter affordable homes.</p>
+            </div>
+            <div className="range-values"><span>Up to {money(maxRent)}</span></div>
+          </div>
+          <input type="range" min="8000" max="60000" step="1000" value={maxRent} onChange={(event) => setMaxRent(Number(event.target.value))} />
+        </div>
       </div>
     </div>
   );
 }
 
-function PropertyGrid({ propertiesToShow, saved, onSave, onDetails, onVisit, emptyText, activeId, onHover }) {
+function PropertyGrid({ propertiesToShow, saved, onSave, onDetails, onVisit, emptyText, activeId, onHover, gridClassName = "" }) {
   return (
-    <div className={propertiesToShow.length ? "properties-grid" : ""}>
+    <div className={propertiesToShow.length ? `properties-grid ${gridClassName}`.trim() : ""}>
       {propertiesToShow.length ? (
         propertiesToShow.map((property) => (
           <PropertyCard
@@ -1569,10 +1598,17 @@ function PropertyGrid({ propertiesToShow, saved, onSave, onDetails, onVisit, emp
 function SplitPropertyExplorer({ propertiesToShow, saved, onSave, onDetails, onVisit, emptyText }) {
   const [activeId, setActiveId] = useState(null);
   const [mobileView, setMobileView] = useState("list");
+  const [selectedMapProperty, setSelectedMapProperty] = useState(null);
 
   function setActiveProperty(property) {
     setActiveId(property.id);
   }
+
+  useEffect(() => {
+    if (selectedMapProperty && !propertiesToShow.some((property) => property.id === selectedMapProperty.id)) {
+      setSelectedMapProperty(null);
+    }
+  }, [propertiesToShow, selectedMapProperty]);
 
   return (
     <div className={`split-explorer mobile-${mobileView}`}>
@@ -1599,10 +1635,17 @@ function SplitPropertyExplorer({ propertiesToShow, saved, onSave, onDetails, onV
       <PropertyMapPanel
         propertiesToShow={propertiesToShow}
         activeId={activeId}
+        selectedProperty={selectedMapProperty}
+        saved={saved}
         onPinSelect={(property) => {
           setActiveId(property.id);
-          onDetails(property);
+          setSelectedMapProperty(property);
         }}
+        onPreviewClose={() => setSelectedMapProperty(null)}
+        onPreviewDetails={() => selectedMapProperty && onDetails(selectedMapProperty)}
+        onPreviewVisit={() => selectedMapProperty && onVisit(selectedMapProperty)}
+        onPreviewSave={() => selectedMapProperty && onSave(selectedMapProperty.id)}
+        resizeKey={mobileView}
       />
     </div>
   );
@@ -1612,7 +1655,18 @@ function propertiesWithCoordinates(propertiesToShow) {
   return propertiesToShow.filter((property) => Number.isFinite(Number(property.latitude)) && Number.isFinite(Number(property.longitude)));
 }
 
-function PropertyMapPanel({ propertiesToShow, activeId, onPinSelect }) {
+function PropertyMapPanel({
+  propertiesToShow,
+  activeId,
+  selectedProperty,
+  saved,
+  onPinSelect,
+  onPreviewClose,
+  onPreviewDetails,
+  onPreviewVisit,
+  onPreviewSave,
+  resizeKey
+}) {
   const mappedProperties = propertiesWithCoordinates(propertiesToShow);
   const bounds = getCoordinateBounds(mappedProperties);
 
@@ -1623,15 +1677,25 @@ function PropertyMapPanel({ propertiesToShow, activeId, onPinSelect }) {
         <span>{mappedProperties.length ? `${mappedProperties.length} mapped` : "Add coordinates in Manage"}</span>
       </div>
       {mapboxToken ? (
-        <MapboxPropertyMap mappedProperties={mappedProperties} activeId={activeId} onPinSelect={onPinSelect} />
+        <MapboxPropertyMap mappedProperties={mappedProperties} activeId={activeId} onPinSelect={onPinSelect} resizeKey={resizeKey} />
       ) : (
         <PreviewPropertyMap mappedProperties={mappedProperties} bounds={bounds} activeId={activeId} onPinSelect={onPinSelect} />
+      )}
+      {selectedProperty && (
+        <MapPropertyPreviewCard
+          property={selectedProperty}
+          saved={saved.has(selectedProperty.id)}
+          onClose={onPreviewClose}
+          onDetails={onPreviewDetails}
+          onVisit={onPreviewVisit}
+          onSave={onPreviewSave}
+        />
       )}
     </aside>
   );
 }
 
-function MapboxPropertyMap({ mappedProperties, activeId, onPinSelect }) {
+function MapboxPropertyMap({ mappedProperties, activeId, onPinSelect, resizeKey }) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
   const mapboxModuleRef = useRef(null);
@@ -1661,9 +1725,12 @@ function MapboxPropertyMap({ mappedProperties, activeId, onPinSelect }) {
     }
 
     initMap();
+    const resizeMap = () => mapRef.current?.resize();
+    window.addEventListener("resize", resizeMap);
 
     return () => {
       cancelled = true;
+      window.removeEventListener("resize", resizeMap);
       markersRef.current.forEach((marker) => marker.remove());
       markersRef.current = [];
       mapRef.current?.remove();
@@ -1672,6 +1739,13 @@ function MapboxPropertyMap({ mappedProperties, activeId, onPinSelect }) {
       setMapReady(false);
     };
   }, []);
+
+  useEffect(() => {
+    const resizeTimer = window.setTimeout(() => {
+      mapRef.current?.resize();
+    }, 80);
+    return () => window.clearTimeout(resizeTimer);
+  }, [resizeKey, mapReady]);
 
   useEffect(() => {
     const mapboxgl = mapboxModuleRef.current;
@@ -1709,6 +1783,32 @@ function MapboxPropertyMap({ mappedProperties, activeId, onPinSelect }) {
           <span>Add a locality in Manage and use Find map pin.</span>
         </div>
       )}
+    </div>
+  );
+}
+
+function MapPropertyPreviewCard({ property, saved, onClose, onDetails, onVisit, onSave }) {
+  return (
+    <div className="map-property-preview">
+      <img src={property.image} alt={getPropertyImageAlt(property)} />
+      <div className="map-preview-copy">
+        <div className="map-preview-title-row">
+          <strong>{property.title}</strong>
+          <span>{money(property.rent)} / mo</span>
+        </div>
+        <p>{property.locality}, {property.city}</p>
+        <div className="map-preview-specs">
+          <span>{property.bhk}</span>
+          <span>{property.area ? `${property.area} sq ft` : "Size TBD"}</span>
+          <span>{property.type || "Home"}</span>
+        </div>
+      </div>
+      <div className="map-preview-actions">
+        <button className="map-preview-close" onClick={onClose} aria-label="Close map preview">x</button>
+        <button className={`map-preview-save ${saved ? "saved" : ""}`} onClick={onSave}>{saved ? "Saved" : "Save"}</button>
+        <button className="button ghost" onClick={onDetails}>Details</button>
+        <button className="button primary" onClick={onVisit}>Visit</button>
+      </div>
     </div>
   );
 }
