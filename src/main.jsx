@@ -12,6 +12,7 @@ const sortOptions = [
   { value: "area-high", label: "Largest first" },
   { value: "deposit-low", label: "Lowest deposit" }
 ];
+const defaultMaxRent = 50000;
 const money = (value) => `Rs ${Number(value).toLocaleString("en-IN")}`;
 const validPages = new Set(["home", "properties", "saved", "account", "manage"]);
 const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN;
@@ -375,7 +376,7 @@ function App() {
   const [search, setSearch] = useState("");
   const [locality, setLocality] = useState("All");
   const [bhk, setBhk] = useState("All");
-  const [maxRent, setMaxRent] = useState(50000);
+  const [maxRent, setMaxRent] = useState(defaultMaxRent);
   const [propertyType, setPropertyType] = useState("All");
   const [amenity, setAmenity] = useState("All");
   const [mappedOnly, setMappedOnly] = useState(false);
@@ -595,7 +596,7 @@ function App() {
     setSearch("");
     setLocality("All");
     setBhk("All");
-    setMaxRent(50000);
+    setMaxRent(defaultMaxRent);
     setPropertyType("All");
     setAmenity("All");
     setMappedOnly(false);
@@ -1028,7 +1029,7 @@ function App() {
     <>
       <header className="topbar">
         <div className="container topbar-inner">
-          <div className="brand">Budget Properties</div>
+          <button className="brand" type="button" onClick={() => openHome()}>Budget Properties</button>
           <nav className="nav" aria-label="Primary navigation">
             <div className="nav-main">
               <button className={page === "properties" ? "active mobile-keep" : "mobile-keep"} onClick={openPropertiesPage}>Properties</button>
@@ -1491,83 +1492,151 @@ function PropertyFilters({
   onClear
 }) {
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [showFilterNudge, setShowFilterNudge] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("budgetPropertiesFilterNudgeDismissed") !== "true";
+  });
+
+  const activeFilters = [
+    search.trim() && { key: "search", label: `Search: ${search.trim()}`, clear: () => setSearch("") },
+    locality !== "All" && { key: "locality", label: locality, clear: () => setLocality("All") },
+    bhk !== "All" && { key: "bhk", label: bhk, clear: () => setBhk("All") },
+    propertyType !== "All" && { key: "type", label: propertyType, clear: () => setPropertyType("All") },
+    amenity !== "All" && { key: "amenity", label: amenity, clear: () => setAmenity("All") },
+    mappedOnly && { key: "mapped", label: "Map pins only", clear: () => setMappedOnly(false) },
+    maxRent !== defaultMaxRent && { key: "rent", label: `Under ${money(maxRent)}`, clear: () => setMaxRent(defaultMaxRent) },
+    sortBy !== "recommended" && {
+      key: "sort",
+      label: sortOptions.find((option) => option.value === sortBy)?.label || "Custom sort",
+      clear: () => setSortBy("recommended")
+    }
+  ].filter(Boolean);
+
+  function dismissFilterNudge() {
+    setShowFilterNudge(false);
+    window.localStorage.setItem("budgetPropertiesFilterNudgeDismissed", "true");
+  }
+
+  function openFilterDrawer() {
+    setFiltersOpen(true);
+    dismissFilterNudge();
+  }
 
   return (
-    <div className={`controls ${filtersOpen ? "filters-open" : ""}`}>
-      <div className="controls-top">
+    <div className="controls">
+      <div className="filter-bar">
         <label className="search">
           <span>Where</span>
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Indiranagar metro furnished" autoComplete="off" />
         </label>
         <div className="filter-summary">
           <span className="count-pill">{count} matches</span>
-          <button className="button ghost filter-toggle" type="button" onClick={() => setFiltersOpen((current) => !current)}>
-            {filtersOpen ? "Hide filters" : "Show filters"}
+          <button className="button ghost filter-toggle" type="button" onClick={openFilterDrawer}>
+            Filters{activeFilters.length ? ` (${activeFilters.length})` : ""}
           </button>
-          <button className="button ghost filter-clear" type="button" onClick={onClear}>Reset</button>
+          {activeFilters.length > 0 && <button className="button ghost filter-clear" type="button" onClick={onClear}>Reset</button>}
         </div>
       </div>
 
-      <div className="filter-panel" hidden={!filtersOpen}>
-        <div className="select-grid">
-          <label className="field">
-            <span>Locality</span>
-            <select value={locality} onChange={(event) => setLocality(event.target.value)}>
-              {localities.map((value) => <option key={value}>{value}</option>)}
-            </select>
-          </label>
-          <label className="field">
-            <span>Layout</span>
-            <select value={bhk} onChange={(event) => setBhk(event.target.value)}>
-              {bhks.map((value) => <option key={value}>{value}</option>)}
-            </select>
-          </label>
-          <label className="field">
-            <span>Type</span>
-            <select value={propertyType} onChange={(event) => setPropertyType(event.target.value)}>
-              {propertyTypes.map((value) => <option key={value}>{value}</option>)}
-            </select>
-          </label>
-          <label className="field">
-            <span>Amenity</span>
-            <select value={amenity} onChange={(event) => setAmenity(event.target.value)}>
-              {amenities.map((value) => <option key={value}>{value}</option>)}
-            </select>
-          </label>
-          <label className="field">
-            <span>Sort</span>
-            <select value={sortBy} onChange={(event) => setSortBy(event.target.value)}>
-              {sortOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-          </label>
-          <label className="field">
-            <span>Max rent</span>
-            <input type="number" min="8000" max="60000" step="1000" value={maxRent} onChange={(event) => setMaxRent(Number(event.target.value))} />
-          </label>
-        </div>
-
-        <div className="filter-row">
-          <button className={`chip ${mappedOnly ? "active" : ""}`} type="button" onClick={() => setMappedOnly(!mappedOnly)}>
-            Map pins only
-          </button>
-          {localities.filter((value) => value !== "All").slice(0, 5).map((value) => (
-            <button className={`chip ${locality === value ? "active" : ""}`} type="button" key={value} onClick={() => setLocality(locality === value ? "All" : value)}>
-              {value}
+      {activeFilters.length > 0 && (
+        <div className="active-filter-row" aria-label="Active filters">
+          {activeFilters.map((filter) => (
+            <button className="active-filter-chip" type="button" key={filter.key} onClick={filter.clear}>
+              {filter.label} <span aria-hidden="true">x</span>
             </button>
           ))}
         </div>
+      )}
 
-        <div className="range-card">
-          <div className="range-head">
-            <div>
-              <strong>Budget range</strong>
-              <p className="property-meta">Adjust the ceiling to filter affordable homes.</p>
-            </div>
-            <div className="range-values"><span>Up to {money(maxRent)}</span></div>
+      {showFilterNudge && (
+        <div className="filter-nudge">
+          <span>Use filters to narrow homes by locality, budget, layout, and map availability.</span>
+          <div>
+            <button className="button primary" type="button" onClick={openFilterDrawer}>Open filters</button>
+            <button className="button ghost" type="button" onClick={dismissFilterNudge}>Dismiss</button>
           </div>
-          <input type="range" min="8000" max="60000" step="1000" value={maxRent} onChange={(event) => setMaxRent(Number(event.target.value))} />
         </div>
-      </div>
+      )}
+
+      {filtersOpen && (
+        <div className="filter-drawer-backdrop" onClick={() => setFiltersOpen(false)}>
+          <aside className="filter-drawer" role="dialog" aria-modal="true" aria-label="Property filters" onClick={(event) => event.stopPropagation()}>
+            <div className="filter-drawer-head">
+              <div>
+                <strong>Filters</strong>
+                <span>{count} matches</span>
+              </div>
+              <button className="icon-button" type="button" onClick={() => setFiltersOpen(false)} aria-label="Close filters">x</button>
+            </div>
+
+            <div className="filter-drawer-body">
+              <div className="select-grid drawer-select-grid">
+                <label className="field">
+                  <span>Locality</span>
+                  <select value={locality} onChange={(event) => setLocality(event.target.value)}>
+                    {localities.map((value) => <option key={value}>{value}</option>)}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Layout</span>
+                  <select value={bhk} onChange={(event) => setBhk(event.target.value)}>
+                    {bhks.map((value) => <option key={value}>{value}</option>)}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Type</span>
+                  <select value={propertyType} onChange={(event) => setPropertyType(event.target.value)}>
+                    {propertyTypes.map((value) => <option key={value}>{value}</option>)}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Amenity</span>
+                  <select value={amenity} onChange={(event) => setAmenity(event.target.value)}>
+                    {amenities.map((value) => <option key={value}>{value}</option>)}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Sort</span>
+                  <select value={sortBy} onChange={(event) => setSortBy(event.target.value)}>
+                    {sortOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Max rent</span>
+                  <input type="number" min="8000" max="60000" step="1000" value={maxRent} onChange={(event) => setMaxRent(Number(event.target.value))} />
+                </label>
+              </div>
+
+              <div className="filter-row">
+                <button className={`chip ${mappedOnly ? "active" : ""}`} type="button" onClick={() => setMappedOnly(!mappedOnly)}>
+                  Map pins only
+                </button>
+                {localities.filter((value) => value !== "All").slice(0, 5).map((value) => (
+                  <button className={`chip ${locality === value ? "active" : ""}`} type="button" key={value} onClick={() => setLocality(locality === value ? "All" : value)}>
+                    {value}
+                  </button>
+                ))}
+              </div>
+
+              <div className="range-card">
+                <div className="range-head">
+                  <div>
+                    <strong>Budget range</strong>
+                    <p className="property-meta">Adjust the ceiling to filter affordable homes.</p>
+                  </div>
+                  <div className="range-values"><span>Up to {money(maxRent)}</span></div>
+                </div>
+                <input type="range" min="8000" max="60000" step="1000" value={maxRent} onChange={(event) => setMaxRent(Number(event.target.value))} />
+              </div>
+            </div>
+
+            <div className="filter-drawer-actions">
+              <button className="button ghost" type="button" onClick={onClear}>Reset</button>
+              <button className="button primary" type="button" onClick={() => setFiltersOpen(false)}>Apply filters</button>
+            </div>
+          </aside>
+        </div>
+      )}
     </div>
   );
 }
