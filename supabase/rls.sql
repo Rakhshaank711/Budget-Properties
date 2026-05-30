@@ -5,6 +5,7 @@ alter table public.profiles enable row level security;
 alter table public.saved_properties enable row level security;
 alter table public.visit_requests enable row level security;
 alter table public.urgent_help_requests enable row level security;
+alter table public.properties enable row level security;
 
 drop policy if exists "Users can read own profile" on public.profiles;
 create policy "Users can read own profile"
@@ -83,3 +84,32 @@ on public.urgent_help_requests
 for delete
 to authenticated
 using (auth.uid() = user_id);
+
+drop policy if exists "Anyone can read active properties" on public.properties;
+create policy "Anyone can read active properties"
+on public.properties
+for select
+to anon, authenticated
+using (is_active = true);
+
+drop policy if exists "Partners can manage properties" on public.properties;
+create policy "Partners can manage properties"
+on public.properties
+for all
+to authenticated
+using (
+  exists (
+    select 1
+    from public.profiles
+    where id = auth.uid()
+      and role in ('partner', 'admin')
+  )
+)
+with check (
+  exists (
+    select 1
+    from public.profiles
+    where id = auth.uid()
+      and role in ('partner', 'admin')
+  )
+);

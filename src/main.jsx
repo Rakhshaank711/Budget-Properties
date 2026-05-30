@@ -96,7 +96,6 @@ const properties = [
   }
 ];
 
-const localities = ["All", ...new Set(properties.map((item) => item.locality))];
 const bhks = ["All", "1 RK", "1 BHK", "2 BHK", "3 BHK"];
 const money = (value) => `Rs ${Number(value).toLocaleString("en-IN")}`;
 const validPages = new Set(["home", "saved", "account"]);
@@ -120,6 +119,8 @@ function App() {
   const [profileLoading, setProfileLoading] = useState(false);
   const [visitRequests, setVisitRequests] = useState([]);
   const [priorityRequests, setPriorityRequests] = useState([]);
+  const [inventory, setInventory] = useState(properties);
+  const [inventoryLoading, setInventoryLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [locality, setLocality] = useState("All");
   const [bhk, setBhk] = useState("All");
@@ -146,6 +147,52 @@ function App() {
     });
 
     return () => listener.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!supabase) return;
+
+    let isActive = true;
+
+    async function loadInventory() {
+      setInventoryLoading(true);
+      const { data, error } = await supabase
+        .from("properties")
+        .select("id, title, locality, city, bhk, rent, deposit, area, type, status, image_url, features, description")
+        .eq("is_active", true)
+        .order("created_at", { ascending: false });
+
+      if (!isActive) return;
+      setInventoryLoading(false);
+
+      if (error) {
+        notify(error.message);
+        return;
+      }
+
+      const normalized = (data ?? []).map((row) => ({
+        id: row.id,
+        title: row.title,
+        locality: row.locality,
+        city: row.city,
+        bhk: row.bhk,
+        rent: row.rent,
+        deposit: row.deposit,
+        area: row.area,
+        type: row.type,
+        status: row.status,
+        image: row.image_url,
+        features: Array.isArray(row.features) ? row.features : [],
+        description: row.description
+      }));
+
+      if (normalized.length) setInventory(normalized);
+    }
+
+    loadInventory();
+    return () => {
+      isActive = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -235,18 +282,18 @@ function App() {
   }, [authReady, session?.user?.id]);
 
   const results = useMemo(() => {
-    return properties.filter((item) => {
+    return inventory.filter((item) => {
       const haystack = `${item.title} ${item.locality} ${item.city} ${item.features.join(" ")}`.toLowerCase();
       const matchesSearch = haystack.includes(search.trim().toLowerCase());
       const matchesLocality = locality === "All" || item.locality === locality;
       const matchesBhk = bhk === "All" || item.bhk === bhk;
       return matchesSearch && matchesLocality && matchesBhk && item.rent <= maxRent;
     });
-  }, [bhk, locality, maxRent, search]);
+  }, [bhk, inventory, locality, maxRent, search]);
 
   const savedProperties = useMemo(() => {
-    return properties.filter((property) => saved.has(property.id));
-  }, [saved]);
+    return inventory.filter((property) => saved.has(property.id));
+  }, [inventory, saved]);
 
   function notify(message, duration = 2400) {
     setToast(message);
@@ -428,7 +475,7 @@ function openHome(sectionId) {
   }
 
   function viewRequestProperty(propertyId) {
-    const property = properties.find((item) => item.id === propertyId);
+    const property = inventory.find((item) => item.id === propertyId);
     if (!property) {
       notify("This property is no longer available.");
       return;
@@ -558,6 +605,7 @@ function openHome(sectionId) {
                   setSearch={setSearch}
                   locality={locality}
                   setLocality={setLocality}
+                  localities={["All", ...new Set(inventory.map((item) => item.locality))]}
                   bhk={bhk}
                   setBhk={setBhk}
                   maxRent={maxRent}
@@ -571,7 +619,7 @@ function openHome(sectionId) {
                   onSave={toggleSaved}
                   onDetails={setSelectedProperty}
                   onVisit={requestVisit}
-                  emptyText="No homes match these filters. Increase the budget or clear a filter."
+                  emptyText={inventoryLoading ? "Loading properties..." : "No homes match these filters. Increase the budget or clear a filter."}
                 />
               </div>
             </section>
@@ -817,7 +865,7 @@ function Hero() {
   );
 }
 
-function PropertyFilters({ search, setSearch, locality, setLocality, bhk, setBhk, maxRent, setMaxRent, count }) {
+function PropertyFilters({ search, setSearch, locality, setLocality, localities, bhk, setBhk, maxRent, setMaxRent, count }) {
   return (
     <div className="controls">
       <div className="controls-top">

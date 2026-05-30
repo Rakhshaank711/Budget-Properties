@@ -96,3 +96,33 @@ on conflict (id) do nothing;
 create index if not exists saved_properties_user_id_idx on public.saved_properties (user_id);
 create index if not exists visit_requests_user_id_idx on public.visit_requests (user_id);
 create index if not exists urgent_help_requests_user_id_idx on public.urgent_help_requests (user_id);
+
+create table if not exists public.properties (
+  id text primary key,
+  title text not null,
+  locality text not null,
+  city text not null,
+  state text,
+  bhk text not null,
+  rent integer not null,
+  deposit integer not null default 0,
+  area integer,
+  type text,
+  status text not null default 'Ready',
+  image_url text,
+  features text[] not null default '{}'::text[],
+  description text,
+  is_active boolean not null default true,
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+drop trigger if exists set_properties_updated_at on public.properties;
+create trigger set_properties_updated_at
+before update on public.properties
+for each row
+execute function public.set_updated_at();
+
+create index if not exists properties_is_active_idx on public.properties (is_active);
+create index if not exists properties_city_locality_idx on public.properties (city, locality);
