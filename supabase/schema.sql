@@ -101,6 +101,7 @@ create table if not exists public.properties (
   id text primary key,
   title text not null,
   locality text not null,
+  locality_tag text,
   city text not null,
   state text,
   bhk text not null,
@@ -120,8 +121,28 @@ create table if not exists public.properties (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.property_images (
+  id bigint generated always as identity primary key,
+  property_id text not null references public.properties(id) on delete cascade,
+  image_url text not null,
+  alt_text text,
+  sort_order integer not null default 0,
+  created_at timestamptz not null default now()
+);
+
+insert into public.property_images (property_id, image_url, alt_text, sort_order)
+select properties.id, properties.image_url, properties.title, 0
+from public.properties
+where properties.image_url is not null
+  and not exists (
+    select 1
+    from public.property_images
+    where property_images.property_id = properties.id
+  );
+
 alter table public.properties add column if not exists latitude numeric;
 alter table public.properties add column if not exists longitude numeric;
+alter table public.properties add column if not exists locality_tag text;
 
 drop trigger if exists set_properties_updated_at on public.properties;
 create trigger set_properties_updated_at
@@ -131,4 +152,6 @@ execute function public.set_updated_at();
 
 create index if not exists properties_is_active_idx on public.properties (is_active);
 create index if not exists properties_city_locality_idx on public.properties (city, locality);
+create index if not exists properties_locality_tag_idx on public.properties (locality_tag);
 create index if not exists properties_lat_lng_idx on public.properties (latitude, longitude);
+create index if not exists property_images_property_id_idx on public.property_images (property_id, sort_order);

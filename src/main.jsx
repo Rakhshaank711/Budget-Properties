@@ -112,10 +112,14 @@ const propertyImageBucket = "property-images";
 const supportedImageTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 
 function normalizePropertyRow(row) {
+  const images = normalizePropertyImages(row);
+  const coverImage = images[0]?.image_url || row.image_url || "";
+
   return {
     id: row.id,
     title: row.title,
     locality: row.locality,
+    localityTag: row.locality_tag,
     city: row.city,
     state: row.state,
     bhk: row.bhk,
@@ -124,13 +128,52 @@ function normalizePropertyRow(row) {
     area: row.area,
     type: row.type,
     status: row.status,
-    image: row.image_url,
+    image: coverImage,
+    images,
     features: Array.isArray(row.features) ? row.features : [],
     description: row.description,
     latitude: row.latitude,
     longitude: row.longitude,
     is_active: row.is_active
   };
+}
+
+function normalizePropertyImages(row) {
+  const relatedImages = Array.isArray(row.property_images) ? row.property_images : [];
+  const normalized = relatedImages
+    .filter((image) => image?.image_url)
+    .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
+    .map((image, index) => ({
+      id: image.id ?? `${row.id}-${index}`,
+      image_url: image.image_url,
+      alt_text: image.alt_text || "",
+      sort_order: Number(image.sort_order ?? index)
+    }));
+
+  if (!normalized.length && row.image_url) {
+    normalized.push({
+      id: `${row.id}-cover`,
+      image_url: row.image_url,
+      alt_text: row.title || "",
+      sort_order: 0
+    });
+  }
+
+  return normalized;
+}
+
+function createEmptyImageEntry() {
+  return {
+    id: window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+    source: "url",
+    image_url: "",
+    image_file: null,
+    alt_text: ""
+  };
+}
+
+function getPropertyImageAlt(property, index = 0) {
+  return property.images?.[index]?.alt_text || property.title;
 }
 
 function getFileExtension(file) {
@@ -464,7 +507,7 @@ function App() {
       setInventoryLoading(true);
       const { data, error } = await supabase
         .from("properties")
-        .select("id, title, locality, city, state, bhk, rent, deposit, area, type, status, image_url, features, description, latitude, longitude, is_active")
+        .select("id, title, locality, locality_tag, city, state, bhk, rent, deposit, area, type, status, image_url, features, description, latitude, longitude, is_active")
         .eq("is_active", true)
         .order("created_at", { ascending: false });
 
@@ -476,7 +519,30 @@ function App() {
         return;
       }
 
-      const normalized = (data ?? []).map(normalizePropertyRow);
+      let rows = data ?? [];
+      const propertyIds = rows.map((property) => property.id);
+      if (propertyIds.length) {
+        const imageResult = await supabase
+          .from("property_images")
+          .select("id, property_id, image_url, alt_text, sort_order")
+          .in("property_id", propertyIds)
+          .order("sort_order", { ascending: true });
+
+        if (!imageResult.error) {
+          const imagesByProperty = new Map();
+          (imageResult.data ?? []).forEach((image) => {
+            const current = imagesByProperty.get(image.property_id) || [];
+            current.push(image);
+            imagesByProperty.set(image.property_id, current);
+          });
+          rows = rows.map((property) => ({
+            ...property,
+            property_images: imagesByProperty.get(property.id) || []
+          }));
+        }
+      }
+
+      const normalized = rows.map(normalizePropertyRow);
 
       setInventory(normalized);
     }
@@ -573,7 +639,7 @@ function App() {
     };
   }, [authReady, session?.user?.id]);
 
-  const localities = useMemo(() => ["All", ...new Set(inventory.map((item) => item.locality).filter(Boolean))], [inventory]);
+  const localities = useMemo(() => ["All", ...new Set(inventory.map((item) => item.localityTag || item.locality).filter(Boolean))], [inventory]);
   const propertyTypes = useMemo(() => ["All", ...new Set(inventory.map((item) => item.type).filter(Boolean))], [inventory]);
   const amenities = useMemo(() => {
     const allFeatures = inventory.flatMap((item) => item.features || []).filter(Boolean);
@@ -586,6 +652,7 @@ function App() {
       const haystack = [
         item.title,
         item.locality,
+        item.localityTag,
         item.city,
         item.state,
         item.bhk,
@@ -595,7 +662,7 @@ function App() {
         ...(item.features || [])
       ].join(" ").toLowerCase();
       const matchesSearch = searchTerms.every((term) => haystack.includes(term));
-      const matchesLocality = locality === "All" || item.locality === locality;
+      const matchesLocality = locality === "All" || (item.localityTag || item.locality) === locality;
       const matchesBhk = bhk === "All" || item.bhk === bhk;
       const matchesType = propertyType === "All" || item.type === propertyType;
       const matchesAmenity = amenity === "All" || item.features.includes(amenity);
@@ -886,20 +953,35 @@ function openHome(sectionId) {
       }
     }
 
-    let imageUrl = propertyForm.image_url.trim() || null;
-    if (propertyForm.image_file) {
-      try {
-        imageUrl = await uploadPropertyImage(propertyForm.image_file, propertyId, session.user.id);
-      } catch (error) {
-        notify(error.message);
-        return false;
+    const imageRows = [];
+    try {
+      for (const [index, image] of (propertyForm.images || []).entries()) {
+        let nextImageUrl = image.image_url?.trim() || "";
+        if (image.image_file) {
+          nextImageUrl = await uploadPropertyImage(image.image_file, `${propertyId}-${index + 1}`, session.user.id);
+        }
+
+        if (nextImageUrl) {
+          imageRows.push({
+            property_id: propertyId,
+            image_url: nextImageUrl,
+            alt_text: image.alt_text?.trim() || null,
+            sort_order: index
+          });
+        }
       }
+    } catch (error) {
+      notify(error.message);
+      return false;
     }
+
+    const imageUrl = imageRows[0]?.image_url || null;
 
     const payload = {
       id: propertyId,
       title: propertyTitle,
       locality: propertyLocality,
+      locality_tag: propertyForm.locality_tag.trim() || null,
       city: propertyCity,
       state: propertyForm.state.trim() || null,
       bhk: propertyForm.bhk,
@@ -923,7 +1005,7 @@ function openHome(sectionId) {
     const { data, error } = await supabase
       .from("properties")
       .upsert(payload)
-      .select("id, title, locality, city, state, bhk, rent, deposit, area, type, status, image_url, features, description, latitude, longitude, is_active")
+      .select("id, title, locality, locality_tag, city, state, bhk, rent, deposit, area, type, status, image_url, features, description, latitude, longitude, is_active")
       .single();
 
     if (error) {
@@ -931,7 +1013,31 @@ function openHome(sectionId) {
       return false;
     }
 
-    const normalized = normalizePropertyRow(data);
+    const deleteImagesResult = await supabase
+      .from("property_images")
+      .delete()
+      .eq("property_id", propertyId);
+
+    if (deleteImagesResult.error) {
+      notify(deleteImagesResult.error.message);
+      return false;
+    }
+
+    if (imageRows.length) {
+      const insertImagesResult = await supabase
+        .from("property_images")
+        .insert(imageRows);
+
+      if (insertImagesResult.error) {
+        notify(insertImagesResult.error.message);
+        return false;
+      }
+    }
+
+    const normalized = normalizePropertyRow({
+      ...data,
+      property_images: imageRows
+    });
     setInventory((current) => {
       const withoutCurrent = current.filter((property) => property.id !== normalized.id);
       return normalized.is_active ? [normalized, ...withoutCurrent] : withoutCurrent;
@@ -1715,6 +1821,7 @@ const emptyPropertyForm = {
   id: "",
   title: "",
   locality: "",
+  locality_tag: "",
   city: "Bengaluru",
   state: "Karnataka",
   bhk: "1 BHK",
@@ -1723,8 +1830,7 @@ const emptyPropertyForm = {
   area: "",
   type: "Apartment",
   status: "Ready",
-  image_url: "",
-  image_file: null,
+  images: [createEmptyImageEntry()],
   features: "",
   description: "",
   latitude: "",
@@ -1735,8 +1841,6 @@ const emptyPropertyForm = {
 function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivateProperty }) {
   const [form, setForm] = useState(emptyPropertyForm);
   const [saving, setSaving] = useState(false);
-  const [imageSource, setImageSource] = useState("url");
-  const [imagePreview, setImagePreview] = useState("");
   const [imageMessage, setImageMessage] = useState("");
   const [mapPinMessage, setMapPinMessage] = useState("");
   const [citySuggestions, setCitySuggestions] = useState([]);
@@ -1744,19 +1848,7 @@ function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivatePr
   const [suggestionLoading, setSuggestionLoading] = useState("");
   const [activeSuggestions, setActiveSuggestions] = useState("");
   const [pinEditorOpen, setPinEditorOpen] = useState(false);
-  const fileInputRef = useRef(null);
   const searchSessionTokenRef = useRef(window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`);
-
-  useEffect(() => {
-    if (!form.image_file) {
-      setImagePreview(form.image_url || "");
-      return undefined;
-    }
-
-    const nextPreview = URL.createObjectURL(form.image_file);
-    setImagePreview(nextPreview);
-    return () => URL.revokeObjectURL(nextPreview);
-  }, [form.image_file, form.image_url]);
 
   useEffect(() => {
     const query = form.city.trim();
@@ -1803,22 +1895,29 @@ function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivatePr
     }
   }
 
-  function chooseImageSource(nextSource) {
-    setImageMessage("");
-    setImageSource(nextSource);
+  function updateImageEntry(entryId, changes) {
     setForm((current) => ({
       ...current,
-      image_file: nextSource === "url" ? null : current.image_file,
-      image_url: nextSource === "device" ? "" : current.image_url
+      images: current.images.map((image) => image.id === entryId ? { ...image, ...changes } : image)
     }));
-    if (nextSource === "url" && fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
   }
 
-  function updateImageFile(file) {
+  function chooseImageSource(entryId, nextSource) {
+    setImageMessage("");
+    setForm((current) => ({
+      ...current,
+      images: current.images.map((image) => image.id === entryId ? {
+        ...image,
+        source: nextSource,
+        image_file: nextSource === "url" ? null : image.image_file,
+        image_url: nextSource === "device" ? "" : image.image_url
+      } : image)
+    }));
+  }
+
+  function updateImageFile(entryId, file) {
     if (!file) {
-      setForm((current) => ({ ...current, image_file: null }));
+      updateImageEntry(entryId, { image_file: null });
       setImageMessage("");
       return;
     }
@@ -1833,8 +1932,24 @@ function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivatePr
       return;
     }
 
-    setForm((current) => ({ ...current, image_file: file, image_url: "" }));
+    updateImageEntry(entryId, { image_file: file, image_url: "", source: "device" });
     setImageMessage(`${file.name} selected.`);
+  }
+
+  function addImageEntry() {
+    setForm((current) => ({
+      ...current,
+      images: [...current.images, createEmptyImageEntry()]
+    }));
+  }
+
+  function removeImageEntry(entryId) {
+    setForm((current) => ({
+      ...current,
+      images: current.images.length > 1
+        ? current.images.filter((image) => image.id !== entryId)
+        : [createEmptyImageEntry()]
+    }));
   }
 
   function closeSuggestionsSoon() {
@@ -1893,6 +2008,7 @@ function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivatePr
       id: property.id || "",
       title: property.title || "",
       locality: property.locality || "",
+      locality_tag: property.localityTag || "",
       city: property.city || "Bengaluru",
       state: property.state || "Karnataka",
       bhk: property.bhk || "1 BHK",
@@ -1901,17 +2017,26 @@ function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivatePr
       area: property.area || "",
       type: property.type || "Apartment",
       status: property.status || "Ready",
-      image_url: property.image || "",
-      image_file: null,
+      images: property.images?.length
+        ? property.images.map((image) => ({
+          id: window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+          source: "url",
+          image_url: image.image_url,
+          image_file: null,
+          alt_text: image.alt_text || ""
+        }))
+        : [{
+          ...createEmptyImageEntry(),
+          image_url: property.image || "",
+          alt_text: property.title || ""
+        }],
       features: (property.features || []).join(", "),
       description: property.description || "",
       latitude: property.latitude || "",
       longitude: property.longitude || "",
       is_active: property.is_active !== false
     });
-    setImageSource(property.image ? "url" : "device");
     setImageMessage("");
-    if (fileInputRef.current) fileInputRef.current.value = "";
     setMapPinMessage(hasPropertyCoordinates(property) ? "This listing already has a map pin." : "");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -1922,11 +2047,8 @@ function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivatePr
     const ok = await onSaveProperty(form);
     setSaving(false);
     if (ok) {
-      setForm(emptyPropertyForm);
-      setImageSource("url");
-      setImagePreview("");
+      setForm({ ...emptyPropertyForm, images: [createEmptyImageEntry()] });
       setImageMessage("");
-      if (fileInputRef.current) fileInputRef.current.value = "";
       setMapPinMessage("");
     }
   }
@@ -1941,11 +2063,8 @@ function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivatePr
             <p className="listing-header-sub">Create listings now, with coordinates ready for a map view later.</p>
           </div>
           <button className="button ghost page-head-cta" onClick={() => {
-            setForm(emptyPropertyForm);
-            setImageSource("url");
-            setImagePreview("");
+            setForm({ ...emptyPropertyForm, images: [createEmptyImageEntry()] });
             setImageMessage("");
-            if (fileInputRef.current) fileInputRef.current.value = "";
             setMapPinMessage("");
           }}>New property</button>
         </div>
@@ -2012,6 +2131,10 @@ function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivatePr
                 )}
               </label>
             </div>
+            <label className="field">
+              <span>Locality tag <em className="field-optional">Optional</em></span>
+              <input value={form.locality_tag} onChange={(event) => updateField("locality_tag", event.target.value)} placeholder="Kalyani Nagar, Yerwada, HSR Layout" />
+            </label>
             <div className="range-inputs">
               <label className="field"><span>State</span><input value={form.state} onChange={(event) => updateField("state", event.target.value)} placeholder="Karnataka" /></label>
               <label className="field"><span>Layout</span><select value={form.bhk} onChange={(event) => updateField("bhk", event.target.value)}>{bhks.filter((item) => item !== "All").map((item) => <option key={item}>{item}</option>)}</select></label>
@@ -2035,27 +2158,27 @@ function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivatePr
               <label className="field"><span>Type</span><input value={form.type} onChange={(event) => updateField("type", event.target.value)} placeholder="Apartment" /></label>
             </div>
             <div className="image-input-card">
-              <div className="image-source-toggle" aria-label="Image source">
-                <button className={imageSource === "url" ? "active" : ""} type="button" onClick={() => chooseImageSource("url")}>Image URL</button>
-                <button className={imageSource === "device" ? "active" : ""} type="button" onClick={() => chooseImageSource("device")}>Upload from device</button>
+              <div className="section-title-row">
+                <div>
+                  <h3>Gallery images</h3>
+                  <p>The first image becomes the cover. Add labels like Hall, Bedroom 1, Kitchen.</p>
+                </div>
+                <button className="request-action-btn" type="button" onClick={addImageEntry}>Add image</button>
               </div>
-              {imageSource === "url" ? (
-                <label className="field"><span>Image URL</span><input value={form.image_url} onChange={(event) => updateField("image_url", event.target.value)} placeholder="https://..." /></label>
-              ) : (
-                <label className="field file-field">
-                  <span>Property image</span>
-                  <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => updateImageFile(event.target.files?.[0])} />
-                </label>
-              )}
-              <div className="image-preview-box">
-                {imagePreview ? (
-                  <img src={imagePreview} alt="Property preview" />
-                ) : (
-                  <div>
-                    <strong>No image selected</strong>
-                    <span>Use a URL or upload JPG, PNG, WebP, or GIF under 5 MB.</span>
-                  </div>
-                )}
+              <div className="image-entry-list">
+                {form.images.map((image, index) => (
+                  <PropertyImageEditor
+                    key={image.id}
+                    image={image}
+                    index={index}
+                    canRemove={form.images.length > 1}
+                    onSourceChange={(nextSource) => chooseImageSource(image.id, nextSource)}
+                    onUrlChange={(value) => updateImageEntry(image.id, { image_url: value, image_file: null })}
+                    onFileChange={(file) => updateImageFile(image.id, file)}
+                    onAltChange={(value) => updateImageEntry(image.id, { alt_text: value })}
+                    onRemove={() => removeImageEntry(image.id)}
+                  />
+                ))}
               </div>
               {imageMessage && <p className="image-input-note">{imageMessage}</p>}
             </div>
@@ -2077,7 +2200,7 @@ function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivatePr
                   <div className="manage-row" key={property.id}>
                     <div>
                       <strong>{property.title}</strong>
-                      <span>{property.locality}, {property.city} - {property.bhk} - {money(property.rent)}</span>
+                      <span>{property.locality}, {property.city} - {property.localityTag || "No tag"} - {property.bhk} - {money(property.rent)}</span>
                     </div>
                     <div className="request-row-actions">
                       <button className="request-action-btn" onClick={() => editProperty(property)}>Edit</button>
@@ -2093,6 +2216,54 @@ function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivatePr
         </div>
       </div>
     </section>
+  );
+}
+
+function PropertyImageEditor({ image, index, canRemove, onSourceChange, onUrlChange, onFileChange, onAltChange, onRemove }) {
+  const [filePreview, setFilePreview] = useState("");
+  const previewUrl = image.image_file ? filePreview : image.image_url;
+
+  useEffect(() => {
+    if (!image.image_file) {
+      setFilePreview("");
+      return undefined;
+    }
+
+    const nextPreview = URL.createObjectURL(image.image_file);
+    setFilePreview(nextPreview);
+    return () => URL.revokeObjectURL(nextPreview);
+  }, [image.image_file]);
+
+  return (
+    <div className="image-entry-card">
+      <div className="image-entry-head">
+        <strong>{index === 0 ? "Cover image" : `Image ${index + 1}`}</strong>
+        <button className="request-delete-btn" type="button" onClick={onRemove} disabled={!canRemove}>Remove</button>
+      </div>
+      <div className="image-source-toggle" aria-label={`Image ${index + 1} source`}>
+        <button className={image.source === "url" ? "active" : ""} type="button" onClick={() => onSourceChange("url")}>Image URL</button>
+        <button className={image.source === "device" ? "active" : ""} type="button" onClick={() => onSourceChange("device")}>Upload from device</button>
+      </div>
+      {image.source === "url" ? (
+        <label className="field"><span>Image URL</span><input value={image.image_url} onChange={(event) => onUrlChange(event.target.value)} placeholder="https://..." /></label>
+      ) : (
+        <label className="field file-field">
+          <span>Image file</span>
+          <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => onFileChange(event.target.files?.[0])} />
+        </label>
+      )}
+      <label className="field"><span>Alt label</span><input value={image.alt_text} onChange={(event) => onAltChange(event.target.value)} placeholder="Hall, Bedroom 1, Kitchen" /></label>
+      <div className="image-preview-box">
+        {previewUrl ? (
+          <img src={previewUrl} alt={image.alt_text || `Property image ${index + 1}`} />
+        ) : (
+          <div>
+            <strong>No image selected</strong>
+            <span>Use a URL or upload JPG, PNG, WebP, or GIF under 5 MB.</span>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -2426,7 +2597,8 @@ function PropertyCard({ property, saved, onSave, onDetails, onVisit, isActive, o
   return (
     <article className={`property-card ${isActive ? "active" : ""}`} onMouseEnter={onHover} onFocus={onHover}>
       <div className="property-media">
-        <img src={property.image} alt={property.title} loading="lazy" />
+        <img src={property.image} alt={getPropertyImageAlt(property)} loading="lazy" />
+        {property.images?.length > 1 && <span className="badge badge-gallery">{property.images.length} photos</span>}
         <span className="badge">{property.status}</span>
         {hasPropertyCoordinates(property) && <span className="badge badge-map">Mapped</span>}
         <button className={`heart ${saved ? "saved" : ""}`} onClick={onSave} aria-label={`Save ${property.title}`}>{saved ? "Saved" : "Save"}</button>
@@ -2519,6 +2691,10 @@ function PriorityRequestForm({ onSubmit, error }) {
 }
 
 function PropertyModal({ property, saved, onClose, onSave, onVisit }) {
+  const images = property.images?.length ? property.images : [{ image_url: property.image, alt_text: property.title }];
+  const [activeImageIndex, setActiveImageIndex] = useState(0);
+  const activeImage = images[activeImageIndex] || images[0];
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" role="dialog" aria-modal="true" aria-label={property.title} onClick={(event) => event.stopPropagation()}>
@@ -2527,8 +2703,25 @@ function PropertyModal({ property, saved, onClose, onSave, onVisit }) {
           <button className="icon-button" onClick={onClose} aria-label="Close">x</button>
         </div>
         <div className="modal-body">
-          <div className="modal-image">
-            <img src={property.image} alt={property.title} />
+          <div className="modal-gallery">
+            <div className="modal-image">
+              <img src={activeImage.image_url} alt={activeImage.alt_text || property.title} />
+            </div>
+            {images.length > 1 && (
+              <div className="gallery-thumbs" aria-label="Property image gallery">
+                {images.map((image, index) => (
+                  <button
+                    className={activeImageIndex === index ? "active" : ""}
+                    type="button"
+                    key={`${image.image_url}-${index}`}
+                    onClick={() => setActiveImageIndex(index)}
+                  >
+                    <img src={image.image_url} alt={image.alt_text || `${property.title} image ${index + 1}`} />
+                    <span>{image.alt_text || `Image ${index + 1}`}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div className="detail-stack">
             <p className="eyebrow">{property.status}</p>

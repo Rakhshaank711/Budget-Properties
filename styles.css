@@ -455,6 +455,13 @@ h1 em {
   font-weight: 700;
 }
 
+.field-optional {
+  color: var(--muted);
+  font-style: normal;
+  font-size: .74rem;
+  font-weight: 700;
+}
+
 .field-inline-hint {
   margin-left: 8px;
   color: var(--error);
@@ -491,6 +498,36 @@ h1 em {
   border-radius: 12px;
   background: #fff;
   padding: 13px;
+}
+
+.image-entry-list {
+  display: grid;
+  gap: 12px;
+}
+
+.image-entry-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--soft);
+  padding: 12px;
+}
+
+.image-entry-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.image-entry-head strong {
+  font-size: .9rem;
+}
+
+.image-entry-head .request-delete-btn:disabled {
+  cursor: not-allowed;
+  opacity: .45;
 }
 
 .image-source-toggle {
@@ -853,6 +890,15 @@ h1 em {
 
 .badge-map {
   top: 48px;
+  background: rgba(255, 255, 255, .92);
+  color: var(--text);
+  border: 1px solid rgba(0, 0, 0, .08);
+}
+
+.badge-gallery {
+  left: 12px;
+  top: auto;
+  bottom: 12px;
   background: rgba(255, 255, 255, .92);
   color: var(--text);
   border: 1px solid rgba(0, 0, 0, .08);
@@ -1658,10 +1704,55 @@ h1 em {
   border: 1px solid var(--border);
 }
 
+.modal-gallery {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
 .modal-image img {
   width: 100%;
   height: 420px;
   object-fit: cover;
+}
+
+.gallery-thumbs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.gallery-thumbs button {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #fff;
+  padding: 0;
+  text-align: left;
+}
+
+.gallery-thumbs button.active {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, .08);
+}
+
+.gallery-thumbs img {
+  width: 100%;
+  aspect-ratio: 1.45;
+  display: block;
+  object-fit: cover;
+}
+
+.gallery-thumbs span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 6px 7px;
+  color: var(--muted);
+  font-size: .74rem;
+  font-weight: 800;
 }
 
 .detail-stack {
