@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import "mapbox-gl/dist/mapbox-gl.css";
 import { isSupabaseConfigured, supabase } from "./supabaseClient";
 import "../styles.css";
 
@@ -99,6 +100,7 @@ const properties = [
 const bhks = ["All", "1 RK", "1 BHK", "2 BHK", "3 BHK"];
 const money = (value) => `Rs ${Number(value).toLocaleString("en-IN")}`;
 const validPages = new Set(["home", "saved", "account", "manage"]);
+const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN;
 
 function normalizePropertyRow(row) {
   return {
@@ -713,7 +715,7 @@ function openHome(sectionId) {
                   count={results.length}
                 />
 
-                <PropertyGrid
+                <SplitPropertyExplorer
                   propertiesToShow={results}
                   saved={saved}
                   onSave={toggleSaved}
@@ -1015,7 +1017,7 @@ function PropertyFilters({ search, setSearch, locality, setLocality, localities,
   );
 }
 
-function PropertyGrid({ propertiesToShow, saved, onSave, onDetails, onVisit, emptyText }) {
+function PropertyGrid({ propertiesToShow, saved, onSave, onDetails, onVisit, emptyText, activeId, onHover }) {
   return (
     <div className={propertiesToShow.length ? "properties-grid" : ""}>
       {propertiesToShow.length ? (
@@ -1027,6 +1029,8 @@ function PropertyGrid({ propertiesToShow, saved, onSave, onDetails, onVisit, emp
             onSave={() => onSave(property.id)}
             onDetails={() => onDetails(property)}
             onVisit={() => onVisit(property)}
+            isActive={activeId === property.id}
+            onHover={() => onHover?.(property)}
           />
         ))
       ) : (
@@ -1034,6 +1038,222 @@ function PropertyGrid({ propertiesToShow, saved, onSave, onDetails, onVisit, emp
       )}
     </div>
   );
+}
+
+function SplitPropertyExplorer({ propertiesToShow, saved, onSave, onDetails, onVisit, emptyText }) {
+  const [activeId, setActiveId] = useState(null);
+  const [mobileView, setMobileView] = useState("list");
+
+  function setActiveProperty(property) {
+    setActiveId(property.id);
+  }
+
+  return (
+    <div className={`split-explorer mobile-${mobileView}`}>
+      <div className="split-view-toggle" aria-label="Listing view mode">
+        <button className={mobileView === "list" ? "active" : ""} onClick={() => setMobileView("list")}>List</button>
+        <button className={mobileView === "map" ? "active" : ""} onClick={() => setMobileView("map")}>Map</button>
+      </div>
+      <div className="split-list-panel">
+        <div className="split-list-head">
+          <strong>{propertiesToShow.length} homes</strong>
+          <span>{propertiesWithCoordinates(propertiesToShow).length} mapped</span>
+        </div>
+        <PropertyGrid
+          propertiesToShow={propertiesToShow}
+          saved={saved}
+          onSave={onSave}
+          onDetails={onDetails}
+          onVisit={onVisit}
+          emptyText={emptyText}
+          activeId={activeId}
+          onHover={setActiveProperty}
+        />
+      </div>
+      <PropertyMapPanel
+        propertiesToShow={propertiesToShow}
+        activeId={activeId}
+        onPinSelect={(property) => {
+          setActiveId(property.id);
+          onDetails(property);
+        }}
+      />
+    </div>
+  );
+}
+
+function propertiesWithCoordinates(propertiesToShow) {
+  return propertiesToShow.filter((property) => Number.isFinite(Number(property.latitude)) && Number.isFinite(Number(property.longitude)));
+}
+
+function PropertyMapPanel({ propertiesToShow, activeId, onPinSelect }) {
+  const mappedProperties = propertiesWithCoordinates(propertiesToShow);
+  const bounds = getCoordinateBounds(mappedProperties);
+
+  return (
+    <aside className="map-panel" aria-label="Property map">
+      <div className="map-toolbar">
+        <strong>{mapboxToken ? "Map" : "Map preview"}</strong>
+        <span>{mappedProperties.length ? `${mappedProperties.length} mapped` : "Add coordinates in Manage"}</span>
+      </div>
+      {mapboxToken ? (
+        <MapboxPropertyMap mappedProperties={mappedProperties} activeId={activeId} onPinSelect={onPinSelect} />
+      ) : (
+        <PreviewPropertyMap mappedProperties={mappedProperties} bounds={bounds} activeId={activeId} onPinSelect={onPinSelect} />
+      )}
+    </aside>
+  );
+}
+
+function MapboxPropertyMap({ mappedProperties, activeId, onPinSelect }) {
+  const mapContainerRef = useRef(null);
+  const mapRef = useRef(null);
+  const mapboxModuleRef = useRef(null);
+  const markersRef = useRef([]);
+  const [mapReady, setMapReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function initMap() {
+      if (!mapContainerRef.current || mapRef.current) return;
+      const mapboxModule = await import("mapbox-gl");
+      if (cancelled || !mapContainerRef.current) return;
+
+      const mapboxgl = mapboxModule.default;
+      mapboxModuleRef.current = mapboxgl;
+      mapboxgl.accessToken = mapboxToken;
+      mapRef.current = new mapboxgl.Map({
+        container: mapContainerRef.current,
+        style: "mapbox://styles/mapbox/light-v11",
+        center: [77.5946, 12.9716],
+        zoom: 11,
+        attributionControl: false
+      });
+      mapRef.current.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "bottom-right");
+      setMapReady(true);
+    }
+
+    initMap();
+
+    return () => {
+      cancelled = true;
+      markersRef.current.forEach((marker) => marker.remove());
+      markersRef.current = [];
+      mapRef.current?.remove();
+      mapRef.current = null;
+      mapboxModuleRef.current = null;
+      setMapReady(false);
+    };
+  }, []);
+
+  useEffect(() => {
+    const mapboxgl = mapboxModuleRef.current;
+    if (!mapReady || !mapRef.current || !mapboxgl) return;
+    markersRef.current.forEach((marker) => marker.remove());
+    markersRef.current = [];
+
+    mappedProperties.forEach((property) => {
+      const markerElement = document.createElement("button");
+      markerElement.type = "button";
+      markerElement.className = `mapbox-price-marker ${activeId === property.id ? "active" : ""}`;
+      markerElement.textContent = formatShortRent(property.rent);
+      markerElement.addEventListener("click", () => onPinSelect(property));
+
+      const marker = new mapboxgl.Marker({ element: markerElement, anchor: "center" })
+        .setLngLat([Number(property.longitude), Number(property.latitude)])
+        .addTo(mapRef.current);
+      markersRef.current.push(marker);
+    });
+
+    if (mappedProperties.length) {
+      const bounds = new mapboxgl.LngLatBounds();
+      mappedProperties.forEach((property) => {
+        bounds.extend([Number(property.longitude), Number(property.latitude)]);
+      });
+      mapRef.current.fitBounds(bounds, { padding: 70, maxZoom: 14, duration: 500 });
+    }
+  }, [activeId, mapReady, mappedProperties, onPinSelect]);
+
+  return (
+    <div className="mapbox-canvas" ref={mapContainerRef}>
+      {!mappedProperties.length && (
+        <div className="map-empty map-empty-overlay">
+          <strong>No mapped homes yet</strong>
+          <span>Add latitude and longitude in Manage to place pins.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PreviewPropertyMap({ mappedProperties, bounds, activeId, onPinSelect }) {
+  return (
+    <div className="map-canvas">
+      <div className="map-grid-lines" />
+      {mappedProperties.map((property) => {
+        const position = getPinPosition(property, bounds);
+        return (
+          <button
+            className={`map-price-pin ${activeId === property.id ? "active" : ""}`}
+            key={property.id}
+            style={{ left: `${position.x}%`, top: `${position.y}%` }}
+            onClick={() => onPinSelect(property)}
+            aria-label={`Open ${property.title}`}
+          >
+            {formatShortRent(property.rent)}
+          </button>
+        );
+      })}
+      {!mappedProperties.length && (
+        <div className="map-empty">
+          <strong>No mapped homes yet</strong>
+          <span>Add latitude and longitude in Manage to place pins.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function getCoordinateBounds(mappedProperties) {
+  if (!mappedProperties.length) {
+    return { minLat: 12.9, maxLat: 13.05, minLng: 77.5, maxLng: 77.75 };
+  }
+
+  const latitudes = mappedProperties.map((property) => Number(property.latitude));
+  const longitudes = mappedProperties.map((property) => Number(property.longitude));
+  const minLat = Math.min(...latitudes);
+  const maxLat = Math.max(...latitudes);
+  const minLng = Math.min(...longitudes);
+  const maxLng = Math.max(...longitudes);
+  const latPadding = Math.max((maxLat - minLat) * 0.18, 0.01);
+  const lngPadding = Math.max((maxLng - minLng) * 0.18, 0.01);
+
+  return {
+    minLat: minLat - latPadding,
+    maxLat: maxLat + latPadding,
+    minLng: minLng - lngPadding,
+    maxLng: maxLng + lngPadding
+  };
+}
+
+function getPinPosition(property, bounds) {
+  const latitude = Number(property.latitude);
+  const longitude = Number(property.longitude);
+  const x = ((longitude - bounds.minLng) / (bounds.maxLng - bounds.minLng)) * 100;
+  const y = (1 - (latitude - bounds.minLat) / (bounds.maxLat - bounds.minLat)) * 100;
+
+  return {
+    x: Math.min(94, Math.max(6, x)),
+    y: Math.min(94, Math.max(6, y))
+  };
+}
+
+function formatShortRent(value) {
+  const rent = Number(value);
+  if (rent >= 100000) return `Rs ${(rent / 100000).toFixed(1)}L`;
+  if (rent >= 1000) return `Rs ${(rent / 1000).toFixed(rent % 1000 === 0 ? 0 : 1)}k`;
+  return money(rent);
 }
 
 function SavedPropertiesPage({ propertiesToShow, saved, onBack, onSave, onDetails, onVisit }) {
@@ -1371,9 +1591,9 @@ function formatRequestDate(value) {
   }).format(new Date(value));
 }
 
-function PropertyCard({ property, saved, onSave, onDetails, onVisit }) {
+function PropertyCard({ property, saved, onSave, onDetails, onVisit, isActive, onHover }) {
   return (
-    <article className="property-card">
+    <article className={`property-card ${isActive ? "active" : ""}`} onMouseEnter={onHover} onFocus={onHover}>
       <div className="property-media">
         <img src={property.image} alt={property.title} loading="lazy" />
         <span className="badge">{property.status}</span>
