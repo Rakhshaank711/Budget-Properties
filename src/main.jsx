@@ -98,9 +98,18 @@ const properties = [
 ];
 
 const bhks = ["All", "1 RK", "1 BHK", "2 BHK", "3 BHK"];
+const sortOptions = [
+  { value: "recommended", label: "Recommended" },
+  { value: "rent-low", label: "Rent: low to high" },
+  { value: "rent-high", label: "Rent: high to low" },
+  { value: "area-high", label: "Largest first" },
+  { value: "deposit-low", label: "Lowest deposit" }
+];
 const money = (value) => `Rs ${Number(value).toLocaleString("en-IN")}`;
 const validPages = new Set(["home", "saved", "account", "manage"]);
 const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN;
+const propertyImageBucket = "property-images";
+const supportedImageTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 
 function normalizePropertyRow(row) {
   return {
@@ -121,6 +130,274 @@ function normalizePropertyRow(row) {
     latitude: row.latitude,
     longitude: row.longitude,
     is_active: row.is_active
+  };
+}
+
+function getFileExtension(file) {
+  const fallback = file.type.split("/")[1] || "jpg";
+  const fromName = file.name.split(".").pop();
+  return (fromName || fallback).toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
+}
+
+function getSafePathPart(value) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "property";
+}
+
+async function uploadPropertyImage(file, propertyId, userId) {
+  if (!supportedImageTypes.has(file.type)) {
+    throw new Error("Upload a JPG, PNG, WebP, or GIF image.");
+  }
+
+  if (file.size > 5 * 1024 * 1024) {
+    throw new Error("Image must be under 5 MB.");
+  }
+
+  const extension = getFileExtension(file);
+  const path = `${userId}/${getSafePathPart(propertyId)}-${Date.now()}.${extension}`;
+  const { error } = await supabase.storage
+    .from(propertyImageBucket)
+    .upload(path, file, {
+      cacheControl: "3600",
+      contentType: file.type,
+      upsert: false
+    });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const { data } = supabase.storage.from(propertyImageBucket).getPublicUrl(path);
+  return data.publicUrl;
+}
+
+function getPropertyScore(property) {
+  const status = String(property.status || "").toLowerCase();
+  const hasMapPin = Number.isFinite(Number(property.latitude)) && Number.isFinite(Number(property.longitude));
+  const featureCount = Array.isArray(property.features) ? property.features.length : 0;
+  return (
+    (status.includes("verified") ? 40 : 0) +
+    (status.includes("ready") ? 24 : 0) +
+    (hasMapPin ? 18 : 0) +
+    Math.min(featureCount, 5) * 3 +
+    Math.max(0, 50000 - Number(property.rent || 0)) / 2500
+  );
+}
+
+async function geocodePropertyLocation(propertyForm) {
+  if (!mapboxToken || !propertyForm.locality?.trim() || !propertyForm.city?.trim()) {
+    return null;
+  }
+
+  const query = [propertyForm.locality, propertyForm.city, propertyForm.state, "India"].filter(Boolean).join(", ");
+  const sessionToken = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+  const searchBoxMatches = await fetchLocalitySuggestions(query, { city: "", state: "" }, sessionToken);
+  const bestMatch = searchBoxMatches[0];
+
+  if (bestMatch) {
+    if (bestMatch.source === "searchbox") {
+      const retrievedFeature = await retrieveSearchBoxSuggestion(bestMatch.mapboxId, sessionToken);
+      const selected = retrievedFeature ? normalizeRetrievedSearchBoxFeature(retrievedFeature, bestMatch) : bestMatch;
+      if (selected.longitude != null && selected.latitude != null) {
+        return {
+          longitude: selected.longitude,
+          latitude: selected.latitude,
+          label: selected.label
+        };
+      }
+    }
+
+    if (bestMatch.longitude != null && bestMatch.latitude != null) {
+      return {
+        longitude: bestMatch.longitude,
+        latitude: bestMatch.latitude,
+        label: bestMatch.label
+      };
+    }
+  }
+
+  const params = new URLSearchParams({
+    access_token: mapboxToken,
+    country: "IN",
+    limit: "1",
+    proximity: "77.5946,12.9716",
+    types: "place,locality,neighborhood,address,poi"
+  });
+  const response = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?${params.toString()}`);
+
+  if (!response.ok) {
+    throw new Error("Could not reach Mapbox for this locality.");
+  }
+
+  const data = await response.json();
+  const center = data.features?.[0]?.center;
+  if (!center) return null;
+
+  return {
+    longitude: center[0],
+    latitude: center[1],
+    label: data.features[0].place_name
+  };
+}
+
+async function fetchMapboxSuggestions(query, options = {}) {
+  if (!mapboxToken || !query?.trim()) return [];
+
+  const params = new URLSearchParams({
+    access_token: mapboxToken,
+    autocomplete: "true",
+    country: "IN",
+    limit: "5",
+    proximity: "77.5946,12.9716",
+    ...options
+  });
+  const response = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?${params.toString()}`);
+
+  if (!response.ok) return [];
+
+  const data = await response.json();
+  return data.features ?? [];
+}
+
+async function fetchSearchBoxSuggestions(query, sessionToken) {
+  if (!mapboxToken || !query?.trim()) return [];
+
+  const params = new URLSearchParams({
+    access_token: mapboxToken,
+    country: "IN",
+    language: "en",
+    limit: "7",
+    proximity: "77.5946,12.9716",
+    session_token: sessionToken
+  });
+  const response = await fetch(`https://api.mapbox.com/search/searchbox/v1/suggest?q=${encodeURIComponent(query)}&${params.toString()}`);
+
+  if (!response.ok) return [];
+
+  const data = await response.json();
+  return data.suggestions ?? [];
+}
+
+async function retrieveSearchBoxSuggestion(mapboxId, sessionToken) {
+  if (!mapboxToken || !mapboxId) return null;
+
+  const params = new URLSearchParams({
+    access_token: mapboxToken,
+    session_token: sessionToken
+  });
+  const response = await fetch(`https://api.mapbox.com/search/searchbox/v1/retrieve/${encodeURIComponent(mapboxId)}?${params.toString()}`);
+
+  if (!response.ok) return null;
+
+  const data = await response.json();
+  return data.features?.[0] ?? null;
+}
+
+async function fetchLocalitySuggestions(query, propertyForm, sessionToken) {
+  if (!query?.trim()) return [];
+
+  const contextualQuery = [query, propertyForm.city, propertyForm.state].filter(Boolean).join(", ");
+  const shouldUseContext = contextualQuery.toLowerCase() !== query.toLowerCase();
+  const [rawSearchBoxSuggestions, contextualSearchBoxSuggestions, rawGeocodingSuggestions, contextualGeocodingSuggestions] = await Promise.all([
+    fetchSearchBoxSuggestions(query, sessionToken),
+    shouldUseContext ? fetchSearchBoxSuggestions(contextualQuery, sessionToken) : Promise.resolve([]),
+    fetchMapboxSuggestions(query, { types: "address,poi,neighborhood,locality,place,district" }),
+    shouldUseContext ? fetchMapboxSuggestions(contextualQuery, { types: "address,poi,neighborhood,locality,place,district" }) : Promise.resolve([])
+  ]);
+
+  const suggestions = [
+    ...rawSearchBoxSuggestions.map(normalizeSearchBoxSuggestion),
+    ...rawGeocodingSuggestions.map(normalizeGeocodingSuggestion),
+    ...contextualSearchBoxSuggestions.map(normalizeSearchBoxSuggestion),
+    ...contextualGeocodingSuggestions.map(normalizeGeocodingSuggestion)
+  ];
+
+  return dedupeSuggestions(rankLocalitySuggestions(suggestions, query, propertyForm));
+}
+
+function dedupeSuggestions(suggestions) {
+  const seen = new Set();
+  return suggestions.filter((suggestion) => {
+    const key = `${suggestion.text}|${suggestion.label}`.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 8);
+}
+
+function rankLocalitySuggestions(suggestions, query, propertyForm) {
+  return suggestions
+    .map((suggestion) => ({
+      ...suggestion,
+      score: getLocalitySuggestionScore(suggestion, query, propertyForm)
+    }))
+    .sort((a, b) => b.score - a.score);
+}
+
+function getLocalitySuggestionScore(suggestion, query, propertyForm) {
+  const haystack = `${suggestion.text} ${suggestion.label}`.toLowerCase();
+  const tokens = query.toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length > 2);
+  const tokenScore = tokens.reduce((score, token) => score + (haystack.includes(token) ? 10 : 0), 0);
+  const cityScore = propertyForm.city && haystack.includes(propertyForm.city.toLowerCase()) ? 12 : 0;
+  const stateScore = propertyForm.state && haystack.includes(propertyForm.state.toLowerCase()) ? 8 : 0;
+  const pinScore = suggestion.longitude != null && suggestion.latitude != null ? 6 : 0;
+  const nameStartsScore = tokens.some((token) => suggestion.text.toLowerCase().startsWith(token)) ? 5 : 0;
+
+  return tokenScore + cityScore + stateScore + pinScore + nameStartsScore;
+}
+
+function normalizeSearchBoxSuggestion(suggestion) {
+  return {
+    id: suggestion.mapbox_id || `${suggestion.name}-${suggestion.place_formatted}`,
+    source: "searchbox",
+    mapboxId: suggestion.mapbox_id,
+    text: suggestion.name || suggestion.text || "Mapbox result",
+    label: suggestion.full_address || suggestion.place_formatted || suggestion.name || "",
+    city: getSearchBoxContext(suggestion, "place"),
+    state: getSearchBoxContext(suggestion, "region")
+  };
+}
+
+function normalizeGeocodingSuggestion(feature) {
+  const center = feature.center || [];
+  return {
+    id: feature.id,
+    source: "geocoding",
+    text: feature.text || "Mapbox result",
+    label: getMapboxPlaceLabel(feature),
+    city: getMapboxContext(feature, "place"),
+    state: getMapboxContext(feature, "region"),
+    longitude: center[0],
+    latitude: center[1]
+  };
+}
+
+function getMapboxContext(feature, contextType) {
+  const context = feature.context?.find((item) => item.id?.startsWith(`${contextType}.`));
+  return context?.text || "";
+}
+
+function getMapboxPlaceLabel(feature) {
+  return feature.place_name || feature.text || "";
+}
+
+function getSearchBoxContext(suggestion, contextType) {
+  const context = suggestion.context?.[contextType];
+  return context?.name || context?.text || "";
+}
+
+function normalizeRetrievedSearchBoxFeature(feature, fallbackSuggestion) {
+  const properties = feature?.properties || {};
+  const coordinates = properties.coordinates || {};
+  const geometryCoordinates = feature?.geometry?.coordinates || [];
+  const context = properties.context || {};
+
+  return {
+    text: properties.name || fallbackSuggestion.text,
+    label: properties.full_address || properties.place_formatted || fallbackSuggestion.label,
+    city: context.place?.name || context.locality?.name || fallbackSuggestion.city,
+    state: context.region?.name || fallbackSuggestion.state,
+    longitude: coordinates.longitude ?? geometryCoordinates[0],
+    latitude: coordinates.latitude ?? geometryCoordinates[1]
   };
 }
 
@@ -149,6 +426,10 @@ function App() {
   const [locality, setLocality] = useState("All");
   const [bhk, setBhk] = useState("All");
   const [maxRent, setMaxRent] = useState(50000);
+  const [propertyType, setPropertyType] = useState("All");
+  const [amenity, setAmenity] = useState("All");
+  const [mappedOnly, setMappedOnly] = useState(false);
+  const [sortBy, setSortBy] = useState("recommended");
   const [saved, setSaved] = useState(() => new Set());
   const [selectedProperty, setSelectedProperty] = useState(null);
   const [urgentFeedback, setUrgentFeedback] = useState("");
@@ -292,15 +573,55 @@ function App() {
     };
   }, [authReady, session?.user?.id]);
 
+  const localities = useMemo(() => ["All", ...new Set(inventory.map((item) => item.locality).filter(Boolean))], [inventory]);
+  const propertyTypes = useMemo(() => ["All", ...new Set(inventory.map((item) => item.type).filter(Boolean))], [inventory]);
+  const amenities = useMemo(() => {
+    const allFeatures = inventory.flatMap((item) => item.features || []).filter(Boolean);
+    return ["All", ...new Set(allFeatures)];
+  }, [inventory]);
+
   const results = useMemo(() => {
-    return inventory.filter((item) => {
-      const haystack = `${item.title} ${item.locality} ${item.city} ${item.features.join(" ")}`.toLowerCase();
-      const matchesSearch = haystack.includes(search.trim().toLowerCase());
+    const searchTerms = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const filtered = inventory.filter((item) => {
+      const haystack = [
+        item.title,
+        item.locality,
+        item.city,
+        item.state,
+        item.bhk,
+        item.type,
+        item.status,
+        item.description,
+        ...(item.features || [])
+      ].join(" ").toLowerCase();
+      const matchesSearch = searchTerms.every((term) => haystack.includes(term));
       const matchesLocality = locality === "All" || item.locality === locality;
       const matchesBhk = bhk === "All" || item.bhk === bhk;
-      return matchesSearch && matchesLocality && matchesBhk && item.rent <= maxRent;
+      const matchesType = propertyType === "All" || item.type === propertyType;
+      const matchesAmenity = amenity === "All" || item.features.includes(amenity);
+      const hasMapPin = Number.isFinite(Number(item.latitude)) && Number.isFinite(Number(item.longitude));
+      return matchesSearch && matchesLocality && matchesBhk && matchesType && matchesAmenity && item.rent <= maxRent && (!mappedOnly || hasMapPin);
     });
-  }, [bhk, inventory, locality, maxRent, search]);
+
+    return filtered.sort((a, b) => {
+      if (sortBy === "rent-low") return a.rent - b.rent;
+      if (sortBy === "rent-high") return b.rent - a.rent;
+      if (sortBy === "area-high") return Number(b.area || 0) - Number(a.area || 0);
+      if (sortBy === "deposit-low") return Number(a.deposit || 0) - Number(b.deposit || 0);
+      return getPropertyScore(b) - getPropertyScore(a);
+    });
+  }, [amenity, bhk, inventory, locality, mappedOnly, maxRent, propertyType, search, sortBy]);
+
+  function clearPropertyFilters() {
+    setSearch("");
+    setLocality("All");
+    setBhk("All");
+    setMaxRent(50000);
+    setPropertyType("All");
+    setAmenity("All");
+    setMappedOnly(false);
+    setSortBy("recommended");
+  }
 
   const savedProperties = useMemo(() => {
     return inventory.filter((property) => saved.has(property.id));
@@ -536,34 +857,68 @@ function openHome(sectionId) {
       return false;
     }
 
+    const propertyId = propertyForm.id.trim();
+    const propertyTitle = propertyForm.title.trim();
+    const propertyLocality = propertyForm.locality.trim();
+    const propertyCity = propertyForm.city.trim();
+    const rent = Number(propertyForm.rent);
+
+    if (!propertyId || !propertyTitle || !propertyLocality || !propertyCity || !propertyForm.bhk || !rent) {
+      notify("Fill required property fields.");
+      return false;
+    }
+
+    const hasManualCoordinates = propertyForm.latitude !== "" && propertyForm.longitude !== "";
+    let latitude = hasManualCoordinates ? Number(propertyForm.latitude) : null;
+    let longitude = hasManualCoordinates ? Number(propertyForm.longitude) : null;
+    let geocodedFromLocality = false;
+
+    if (!hasManualCoordinates) {
+      try {
+        const geocodedLocation = await geocodePropertyLocation(propertyForm);
+        if (geocodedLocation) {
+          latitude = geocodedLocation.latitude;
+          longitude = geocodedLocation.longitude;
+          geocodedFromLocality = true;
+        }
+      } catch (error) {
+        notify(error.message);
+      }
+    }
+
+    let imageUrl = propertyForm.image_url.trim() || null;
+    if (propertyForm.image_file) {
+      try {
+        imageUrl = await uploadPropertyImage(propertyForm.image_file, propertyId, session.user.id);
+      } catch (error) {
+        notify(error.message);
+        return false;
+      }
+    }
+
     const payload = {
-      id: propertyForm.id.trim(),
-      title: propertyForm.title.trim(),
-      locality: propertyForm.locality.trim(),
-      city: propertyForm.city.trim(),
+      id: propertyId,
+      title: propertyTitle,
+      locality: propertyLocality,
+      city: propertyCity,
       state: propertyForm.state.trim() || null,
       bhk: propertyForm.bhk,
-      rent: Number(propertyForm.rent),
+      rent,
       deposit: Number(propertyForm.deposit || 0),
       area: propertyForm.area ? Number(propertyForm.area) : null,
       type: propertyForm.type.trim() || null,
       status: propertyForm.status.trim() || "Ready",
-      image_url: propertyForm.image_url.trim() || null,
+      image_url: imageUrl,
       features: propertyForm.features
         .split(",")
         .map((feature) => feature.trim())
         .filter(Boolean),
       description: propertyForm.description.trim() || null,
-      latitude: propertyForm.latitude ? Number(propertyForm.latitude) : null,
-      longitude: propertyForm.longitude ? Number(propertyForm.longitude) : null,
+      latitude,
+      longitude,
       is_active: propertyForm.is_active,
       created_by: session.user.id
     };
-
-    if (!payload.id || !payload.title || !payload.locality || !payload.city || !payload.bhk || !payload.rent) {
-      notify("Fill required property fields.");
-      return false;
-    }
 
     const { data, error } = await supabase
       .from("properties")
@@ -581,7 +936,7 @@ function openHome(sectionId) {
       const withoutCurrent = current.filter((property) => property.id !== normalized.id);
       return normalized.is_active ? [normalized, ...withoutCurrent] : withoutCurrent;
     });
-    notify("Property saved.");
+    notify(geocodedFromLocality ? "Property saved with map pin from locality." : "Property saved.");
     return true;
   }
 
@@ -707,12 +1062,23 @@ function openHome(sectionId) {
                   setSearch={setSearch}
                   locality={locality}
                   setLocality={setLocality}
-                  localities={["All", ...new Set(inventory.map((item) => item.locality))]}
+                  localities={localities}
                   bhk={bhk}
                   setBhk={setBhk}
                   maxRent={maxRent}
                   setMaxRent={setMaxRent}
+                  propertyType={propertyType}
+                  setPropertyType={setPropertyType}
+                  propertyTypes={propertyTypes}
+                  amenity={amenity}
+                  setAmenity={setAmenity}
+                  amenities={amenities}
+                  mappedOnly={mappedOnly}
+                  setMappedOnly={setMappedOnly}
+                  sortBy={sortBy}
+                  setSortBy={setSortBy}
                   count={results.length}
+                  onClear={clearPropertyFilters}
                 />
 
                 <SplitPropertyExplorer
@@ -973,15 +1339,40 @@ function Hero() {
   );
 }
 
-function PropertyFilters({ search, setSearch, locality, setLocality, localities, bhk, setBhk, maxRent, setMaxRent, count }) {
+function PropertyFilters({
+  search,
+  setSearch,
+  locality,
+  setLocality,
+  localities,
+  bhk,
+  setBhk,
+  maxRent,
+  setMaxRent,
+  propertyType,
+  setPropertyType,
+  propertyTypes,
+  amenity,
+  setAmenity,
+  amenities,
+  mappedOnly,
+  setMappedOnly,
+  sortBy,
+  setSortBy,
+  count,
+  onClear
+}) {
   return (
     <div className="controls">
       <div className="controls-top">
         <label className="search">
-          <span>Search</span>
-          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Locality, feature, or property name" autoComplete="off" />
+          <span>Where</span>
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Indiranagar metro furnished" autoComplete="off" />
         </label>
-        <span className="count-pill">{count} matches</span>
+        <div className="filter-summary">
+          <span className="count-pill">{count} matches</span>
+          <button className="button ghost filter-clear" type="button" onClick={onClear}>Reset</button>
+        </div>
       </div>
 
       <div className="select-grid">
@@ -998,9 +1389,38 @@ function PropertyFilters({ search, setSearch, locality, setLocality, localities,
           </select>
         </label>
         <label className="field">
+          <span>Type</span>
+          <select value={propertyType} onChange={(event) => setPropertyType(event.target.value)}>
+            {propertyTypes.map((value) => <option key={value}>{value}</option>)}
+          </select>
+        </label>
+        <label className="field">
+          <span>Amenity</span>
+          <select value={amenity} onChange={(event) => setAmenity(event.target.value)}>
+            {amenities.map((value) => <option key={value}>{value}</option>)}
+          </select>
+        </label>
+        <label className="field">
+          <span>Sort</span>
+          <select value={sortBy} onChange={(event) => setSortBy(event.target.value)}>
+            {sortOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <label className="field">
           <span>Max rent</span>
           <input type="number" min="8000" max="60000" step="1000" value={maxRent} onChange={(event) => setMaxRent(Number(event.target.value))} />
         </label>
+      </div>
+
+      <div className="filter-row">
+        <button className={`chip ${mappedOnly ? "active" : ""}`} type="button" onClick={() => setMappedOnly(!mappedOnly)}>
+          Map pins only
+        </button>
+        {localities.filter((value) => value !== "All").slice(0, 5).map((value) => (
+          <button className={`chip ${locality === value ? "active" : ""}`} type="button" key={value} onClick={() => setLocality(locality === value ? "All" : value)}>
+            {value}
+          </button>
+        ))}
       </div>
 
       <div className="range-card">
@@ -1180,7 +1600,7 @@ function MapboxPropertyMap({ mappedProperties, activeId, onPinSelect }) {
       {!mappedProperties.length && (
         <div className="map-empty map-empty-overlay">
           <strong>No mapped homes yet</strong>
-          <span>Add latitude and longitude in Manage to place pins.</span>
+          <span>Add a locality in Manage and use Find map pin.</span>
         </div>
       )}
     </div>
@@ -1208,7 +1628,7 @@ function PreviewPropertyMap({ mappedProperties, bounds, activeId, onPinSelect })
       {!mappedProperties.length && (
         <div className="map-empty">
           <strong>No mapped homes yet</strong>
-          <span>Add latitude and longitude in Manage to place pins.</span>
+          <span>Add a locality in Manage and use Find map pin.</span>
         </div>
       )}
     </div>
@@ -1256,6 +1676,15 @@ function formatShortRent(value) {
   return money(rent);
 }
 
+function hasPropertyCoordinates(property) {
+  return Number.isFinite(Number(property.latitude)) && Number.isFinite(Number(property.longitude));
+}
+
+function formatDepositLabel(value) {
+  const deposit = Number(value || 0);
+  return deposit ? money(deposit) : "No deposit";
+}
+
 function SavedPropertiesPage({ propertiesToShow, saved, onBack, onSave, onDetails, onVisit }) {
   return (
     <section className="page-section">
@@ -1295,6 +1724,7 @@ const emptyPropertyForm = {
   type: "Apartment",
   status: "Ready",
   image_url: "",
+  image_file: null,
   features: "",
   description: "",
   latitude: "",
@@ -1305,9 +1735,157 @@ const emptyPropertyForm = {
 function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivateProperty }) {
   const [form, setForm] = useState(emptyPropertyForm);
   const [saving, setSaving] = useState(false);
+  const [imageSource, setImageSource] = useState("url");
+  const [imagePreview, setImagePreview] = useState("");
+  const [imageMessage, setImageMessage] = useState("");
+  const [mapPinMessage, setMapPinMessage] = useState("");
+  const [citySuggestions, setCitySuggestions] = useState([]);
+  const [localitySuggestions, setLocalitySuggestions] = useState([]);
+  const [suggestionLoading, setSuggestionLoading] = useState("");
+  const [activeSuggestions, setActiveSuggestions] = useState("");
+  const [pinEditorOpen, setPinEditorOpen] = useState(false);
+  const fileInputRef = useRef(null);
+  const searchSessionTokenRef = useRef(window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`);
+
+  useEffect(() => {
+    if (!form.image_file) {
+      setImagePreview(form.image_url || "");
+      return undefined;
+    }
+
+    const nextPreview = URL.createObjectURL(form.image_file);
+    setImagePreview(nextPreview);
+    return () => URL.revokeObjectURL(nextPreview);
+  }, [form.image_file, form.image_url]);
+
+  useEffect(() => {
+    const query = form.city.trim();
+    if (!mapboxToken || query.length < 2) {
+      setCitySuggestions([]);
+      return undefined;
+    }
+
+    const timer = window.setTimeout(async () => {
+      setSuggestionLoading("city");
+      const suggestions = await fetchMapboxSuggestions(query, { types: "place,district" });
+      setCitySuggestions(suggestions);
+      setSuggestionLoading("");
+    }, 260);
+
+    return () => window.clearTimeout(timer);
+  }, [form.city]);
+
+  useEffect(() => {
+    const localityQuery = form.locality.trim();
+    if (!mapboxToken || localityQuery.length < 2) {
+      setLocalitySuggestions([]);
+      return undefined;
+    }
+
+    const timer = window.setTimeout(async () => {
+      setSuggestionLoading("locality");
+      const suggestions = await fetchLocalitySuggestions(localityQuery, form, searchSessionTokenRef.current);
+      setLocalitySuggestions(suggestions);
+      setSuggestionLoading("");
+    }, 260);
+
+    return () => window.clearTimeout(timer);
+  }, [form.city, form.locality, form.state]);
 
   function updateField(field, value) {
-    setForm((current) => ({ ...current, [field]: value }));
+    setForm((current) => ({
+      ...current,
+      [field]: value,
+      ...(field === "locality" || field === "city" || field === "state" ? { latitude: "", longitude: "" } : {})
+    }));
+    if (["locality", "city", "state"].includes(field)) {
+      setMapPinMessage("");
+    }
+  }
+
+  function chooseImageSource(nextSource) {
+    setImageMessage("");
+    setImageSource(nextSource);
+    setForm((current) => ({
+      ...current,
+      image_file: nextSource === "url" ? null : current.image_file,
+      image_url: nextSource === "device" ? "" : current.image_url
+    }));
+    if (nextSource === "url" && fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  }
+
+  function updateImageFile(file) {
+    if (!file) {
+      setForm((current) => ({ ...current, image_file: null }));
+      setImageMessage("");
+      return;
+    }
+
+    if (!supportedImageTypes.has(file.type)) {
+      setImageMessage("Upload a JPG, PNG, WebP, or GIF image.");
+      return;
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      setImageMessage("Image must be under 5 MB.");
+      return;
+    }
+
+    setForm((current) => ({ ...current, image_file: file, image_url: "" }));
+    setImageMessage(`${file.name} selected.`);
+  }
+
+  function closeSuggestionsSoon() {
+    window.setTimeout(() => setActiveSuggestions(""), 120);
+  }
+
+  function selectCitySuggestion(feature) {
+    const state = getMapboxContext(feature, "region");
+    setForm((current) => ({
+      ...current,
+      city: feature.text || current.city,
+      state: state || current.state,
+      latitude: "",
+      longitude: ""
+    }));
+    setMapPinMessage(state ? `State set to ${state}.` : "");
+    setActiveSuggestions("");
+  }
+
+  async function selectLocalitySuggestion(suggestion) {
+    let selected = suggestion;
+    if (suggestion.source === "searchbox") {
+      setSuggestionLoading("locality");
+      const retrievedFeature = await retrieveSearchBoxSuggestion(suggestion.mapboxId, searchSessionTokenRef.current);
+      selected = retrievedFeature ? normalizeRetrievedSearchBoxFeature(retrievedFeature, suggestion) : suggestion;
+      searchSessionTokenRef.current = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+      setSuggestionLoading("");
+    }
+
+    setForm((current) => ({
+      ...current,
+      locality: selected.text || current.locality,
+      city: selected.city || current.city,
+      state: selected.state || current.state,
+      longitude: selected.longitude != null ? String(selected.longitude) : current.longitude,
+      latitude: selected.latitude != null ? String(selected.latitude) : current.latitude
+    }));
+    setMapPinMessage(selected.longitude != null && selected.latitude != null
+      ? `Map pin selected: ${selected.label}`
+      : `Selected ${selected.label}. Use Find map pin if needed.`
+    );
+    setActiveSuggestions("");
+  }
+
+  function updateMapPin(nextPin) {
+    setForm((current) => ({
+      ...current,
+      latitude: String(nextPin.latitude),
+      longitude: String(nextPin.longitude)
+    }));
+    setMapPinMessage("Map pin adjusted manually.");
   }
 
   function editProperty(property) {
@@ -1324,12 +1902,17 @@ function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivatePr
       type: property.type || "Apartment",
       status: property.status || "Ready",
       image_url: property.image || "",
+      image_file: null,
       features: (property.features || []).join(", "),
       description: property.description || "",
       latitude: property.latitude || "",
       longitude: property.longitude || "",
       is_active: property.is_active !== false
     });
+    setImageSource(property.image ? "url" : "device");
+    setImageMessage("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    setMapPinMessage(hasPropertyCoordinates(property) ? "This listing already has a map pin." : "");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -1338,7 +1921,14 @@ function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivatePr
     setSaving(true);
     const ok = await onSaveProperty(form);
     setSaving(false);
-    if (ok) setForm(emptyPropertyForm);
+    if (ok) {
+      setForm(emptyPropertyForm);
+      setImageSource("url");
+      setImagePreview("");
+      setImageMessage("");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      setMapPinMessage("");
+    }
   }
 
   return (
@@ -1350,7 +1940,14 @@ function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivatePr
             <h1 className="page-title">Manage properties.</h1>
             <p className="listing-header-sub">Create listings now, with coordinates ready for a map view later.</p>
           </div>
-          <button className="button ghost page-head-cta" onClick={() => setForm(emptyPropertyForm)}>New property</button>
+          <button className="button ghost page-head-cta" onClick={() => {
+            setForm(emptyPropertyForm);
+            setImageSource("url");
+            setImagePreview("");
+            setImageMessage("");
+            if (fileInputRef.current) fileInputRef.current.value = "";
+            setMapPinMessage("");
+          }}>New property</button>
         </div>
 
         <div className="manage-grid">
@@ -1368,13 +1965,67 @@ function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivatePr
             </div>
             <label className="field"><span>Title</span><input value={form.title} onChange={(event) => updateField("title", event.target.value)} placeholder="Quiet 2 BHK near Metro" required /></label>
             <div className="range-inputs">
-              <label className="field"><span>Locality</span><input value={form.locality} onChange={(event) => updateField("locality", event.target.value)} placeholder="Indiranagar" required /></label>
-              <label className="field"><span>City</span><input value={form.city} onChange={(event) => updateField("city", event.target.value)} placeholder="Bengaluru" required /></label>
+              <label className="field autocomplete-field">
+                <span>Locality or society</span>
+                <input
+                  value={form.locality}
+                  onChange={(event) => updateField("locality", event.target.value)}
+                  onFocus={() => setActiveSuggestions("locality")}
+                  onBlur={closeSuggestionsSoon}
+                  placeholder="Prestige Shantiniketan, Indiranagar"
+                  autoComplete="off"
+                  required
+                />
+                {activeSuggestions === "locality" && (localitySuggestions.length > 0 || suggestionLoading === "locality") && (
+                  <div className="autocomplete-menu">
+                    {suggestionLoading === "locality" && <div className="autocomplete-status">Searching places...</div>}
+                    {localitySuggestions.map((feature) => (
+                      <button type="button" key={feature.id} onMouseDown={() => selectLocalitySuggestion(feature)}>
+                        <strong>{feature.text}</strong>
+                        <span>{feature.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </label>
+              <label className="field autocomplete-field">
+                <span>City</span>
+                <input
+                  value={form.city}
+                  onChange={(event) => updateField("city", event.target.value)}
+                  onFocus={() => setActiveSuggestions("city")}
+                  onBlur={closeSuggestionsSoon}
+                  placeholder="Bengaluru"
+                  autoComplete="off"
+                  required
+                />
+                {activeSuggestions === "city" && (citySuggestions.length > 0 || suggestionLoading === "city") && (
+                  <div className="autocomplete-menu">
+                    {suggestionLoading === "city" && <div className="autocomplete-status">Searching cities...</div>}
+                    {citySuggestions.map((feature) => (
+                      <button type="button" key={feature.id} onMouseDown={() => selectCitySuggestion(feature)}>
+                        <strong>{feature.text}</strong>
+                        <span>{getMapboxPlaceLabel(feature)}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </label>
             </div>
             <div className="range-inputs">
               <label className="field"><span>State</span><input value={form.state} onChange={(event) => updateField("state", event.target.value)} placeholder="Karnataka" /></label>
               <label className="field"><span>Layout</span><select value={form.bhk} onChange={(event) => updateField("bhk", event.target.value)}>{bhks.filter((item) => item !== "All").map((item) => <option key={item}>{item}</option>)}</select></label>
             </div>
+            <MapPinControl
+              latitude={form.latitude}
+              longitude={form.longitude}
+              label={form.locality || form.title || "Selected listing"}
+              message={mapPinMessage}
+              editorOpen={pinEditorOpen}
+              onOpenEditor={() => setPinEditorOpen(true)}
+              onCloseEditor={() => setPinEditorOpen(false)}
+              onPinChange={updateMapPin}
+            />
             <div className="range-inputs">
               <label className="field"><span>Rent</span><input type="number" value={form.rent} onChange={(event) => updateField("rent", event.target.value)} placeholder="25000" required /></label>
               <label className="field"><span>Deposit</span><input type="number" value={form.deposit} onChange={(event) => updateField("deposit", event.target.value)} placeholder="75000" /></label>
@@ -1383,12 +2034,32 @@ function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivatePr
               <label className="field"><span>Area</span><input type="number" value={form.area} onChange={(event) => updateField("area", event.target.value)} placeholder="850" /></label>
               <label className="field"><span>Type</span><input value={form.type} onChange={(event) => updateField("type", event.target.value)} placeholder="Apartment" /></label>
             </div>
-            <label className="field"><span>Image URL</span><input value={form.image_url} onChange={(event) => updateField("image_url", event.target.value)} placeholder="https://..." /></label>
-            <label className="field"><span>Features</span><input value={form.features} onChange={(event) => updateField("features", event.target.value)} placeholder="Furnished, Balcony, Lift" /></label>
-            <div className="range-inputs">
-              <label className="field"><span>Latitude</span><input type="number" step="any" value={form.latitude} onChange={(event) => updateField("latitude", event.target.value)} placeholder="12.9716" /></label>
-              <label className="field"><span>Longitude</span><input type="number" step="any" value={form.longitude} onChange={(event) => updateField("longitude", event.target.value)} placeholder="77.5946" /></label>
+            <div className="image-input-card">
+              <div className="image-source-toggle" aria-label="Image source">
+                <button className={imageSource === "url" ? "active" : ""} type="button" onClick={() => chooseImageSource("url")}>Image URL</button>
+                <button className={imageSource === "device" ? "active" : ""} type="button" onClick={() => chooseImageSource("device")}>Upload from device</button>
+              </div>
+              {imageSource === "url" ? (
+                <label className="field"><span>Image URL</span><input value={form.image_url} onChange={(event) => updateField("image_url", event.target.value)} placeholder="https://..." /></label>
+              ) : (
+                <label className="field file-field">
+                  <span>Property image</span>
+                  <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => updateImageFile(event.target.files?.[0])} />
+                </label>
+              )}
+              <div className="image-preview-box">
+                {imagePreview ? (
+                  <img src={imagePreview} alt="Property preview" />
+                ) : (
+                  <div>
+                    <strong>No image selected</strong>
+                    <span>Use a URL or upload JPG, PNG, WebP, or GIF under 5 MB.</span>
+                  </div>
+                )}
+              </div>
+              {imageMessage && <p className="image-input-note">{imageMessage}</p>}
             </div>
+            <label className="field"><span>Features</span><input value={form.features} onChange={(event) => updateField("features", event.target.value)} placeholder="Furnished, Balcony, Lift" /></label>
             <label className="field"><span>Description</span><textarea value={form.description} onChange={(event) => updateField("description", event.target.value)} placeholder="Short listing description" /></label>
             <button className="button primary" type="submit" disabled={saving}>{saving ? "Saving..." : "Save property"}</button>
           </form>
@@ -1422,6 +2093,163 @@ function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivatePr
         </div>
       </div>
     </section>
+  );
+}
+
+function MapPinControl({ latitude, longitude, label, message, editorOpen, onOpenEditor, onCloseEditor, onPinChange }) {
+  const hasPin = Number.isFinite(Number(latitude)) && Number.isFinite(Number(longitude));
+
+  return (
+    <div className="map-pin-card">
+      <div className="manage-map-preview">
+        {hasPin && mapboxToken ? (
+          <MapPinMap latitude={latitude} longitude={longitude} label={label} />
+        ) : (
+          <div className="manage-map-empty">
+            <strong>No pin selected</strong>
+            <span>Choose a locality or society suggestion.</span>
+          </div>
+        )}
+      </div>
+      <div className="map-pin-card-copy">
+        <strong>{hasPin ? "Map pin ready" : "Map pin preview"}</strong>
+        <p>{message || "The selected suggestion will place this listing on the map."}</p>
+        <button className="button ghost" type="button" onClick={onOpenEditor} disabled={!hasPin}>
+          Adjust pin
+        </button>
+      </div>
+
+      {editorOpen && hasPin && (
+        <MapPinEditorModal
+          latitude={latitude}
+          longitude={longitude}
+          label={label}
+          onClose={onCloseEditor}
+          onPinChange={onPinChange}
+        />
+      )}
+    </div>
+  );
+}
+
+function MapPinEditorModal({ latitude, longitude, label, onClose, onPinChange }) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="pin-editor-modal" role="dialog" aria-modal="true" aria-label="Adjust map pin" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-head">
+          <strong>Adjust map pin</strong>
+          <button className="icon-button" onClick={onClose} aria-label="Close">x</button>
+        </div>
+        <div className="pin-editor-body">
+          <MapPinMap
+            latitude={latitude}
+            longitude={longitude}
+            label={label}
+            interactive
+            onPinChange={onPinChange}
+          />
+          <p className="property-meta">Drag the marker or click the map to set the exact listing location.</p>
+          <button className="button primary full" onClick={onClose}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MapPinMap({ latitude, longitude, label, interactive = false, onPinChange }) {
+  const mapContainerRef = useRef(null);
+  const mapRef = useRef(null);
+  const markerRef = useRef(null);
+  const mapboxModuleRef = useRef(null);
+  const [mapReady, setMapReady] = useState(false);
+  const numericLatitude = Number(latitude);
+  const numericLongitude = Number(longitude);
+  const hasPin = Number.isFinite(numericLatitude) && Number.isFinite(numericLongitude);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function initMap() {
+      if (!mapContainerRef.current || mapRef.current || !hasPin) return;
+      const mapboxModule = await import("mapbox-gl");
+      if (cancelled || !mapContainerRef.current) return;
+
+      const mapboxgl = mapboxModule.default;
+      mapboxModuleRef.current = mapboxgl;
+      mapboxgl.accessToken = mapboxToken;
+      mapRef.current = new mapboxgl.Map({
+        container: mapContainerRef.current,
+        style: "mapbox://styles/mapbox/light-v11",
+        center: [numericLongitude, numericLatitude],
+        zoom: interactive ? 16 : 14,
+        attributionControl: false,
+        interactive
+      });
+
+      if (interactive) {
+        mapRef.current.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "bottom-right");
+        mapRef.current.on("click", (event) => {
+          onPinChange?.({
+            latitude: event.lngLat.lat,
+            longitude: event.lngLat.lng
+          });
+        });
+      }
+
+      setMapReady(true);
+      window.setTimeout(() => mapRef.current?.resize(), 80);
+    }
+
+    initMap();
+
+    return () => {
+      cancelled = true;
+      markerRef.current?.remove();
+      markerRef.current = null;
+      mapRef.current?.remove();
+      mapRef.current = null;
+      mapboxModuleRef.current = null;
+      setMapReady(false);
+    };
+  }, []);
+
+  useEffect(() => {
+    const mapboxgl = mapboxModuleRef.current;
+    if (!mapReady || !mapRef.current || !mapboxgl || !hasPin) return;
+
+    const lngLat = [numericLongitude, numericLatitude];
+    if (!markerRef.current) {
+      markerRef.current = new mapboxgl.Marker({ color: "#111111", draggable: interactive })
+        .setLngLat(lngLat)
+        .addTo(mapRef.current);
+
+      if (interactive) {
+        markerRef.current.on("dragend", () => {
+          const nextPosition = markerRef.current.getLngLat();
+          onPinChange?.({
+            latitude: nextPosition.lat,
+            longitude: nextPosition.lng
+          });
+        });
+      }
+    } else {
+      markerRef.current.setLngLat(lngLat);
+    }
+
+    mapRef.current.easeTo({ center: lngLat, zoom: interactive ? 16 : 14, duration: 300 });
+    mapRef.current.resize();
+  }, [hasPin, interactive, latitude, longitude, mapReady, numericLatitude, numericLongitude, onPinChange]);
+
+  return (
+    <div className={`pin-map ${interactive ? "pin-map-editor" : ""}`} ref={mapContainerRef}>
+      {!mapboxToken && (
+        <div className="manage-map-empty">
+          <strong>Mapbox not configured</strong>
+          <span>Add VITE_MAPBOX_TOKEN to preview pins.</span>
+        </div>
+      )}
+      <span className="pin-map-label">{label}</span>
+    </div>
   );
 }
 
@@ -1592,27 +2420,38 @@ function formatRequestDate(value) {
 }
 
 function PropertyCard({ property, saved, onSave, onDetails, onVisit, isActive, onHover }) {
+  const topFeatures = (property.features || []).slice(0, 3);
+  const extraFeatureCount = Math.max(0, (property.features || []).length - topFeatures.length);
+
   return (
     <article className={`property-card ${isActive ? "active" : ""}`} onMouseEnter={onHover} onFocus={onHover}>
       <div className="property-media">
         <img src={property.image} alt={property.title} loading="lazy" />
         <span className="badge">{property.status}</span>
+        {hasPropertyCoordinates(property) && <span className="badge badge-map">Mapped</span>}
         <button className={`heart ${saved ? "saved" : ""}`} onClick={onSave} aria-label={`Save ${property.title}`}>{saved ? "Saved" : "Save"}</button>
       </div>
       <div className="property-body">
+        <div className="card-kicker">
+          <span>{property.type || "Home"}</span>
+          <span>{property.locality}</span>
+        </div>
         <div className="property-title-row">
           <div>
             <div className="property-title">{property.title}</div>
             <div className="property-meta">{property.locality}, {property.city}</div>
           </div>
-          <div className="property-price">{money(property.rent)}</div>
+          <div className="property-price"><strong>{money(property.rent)}</strong><span>/ mo</span></div>
         </div>
         <div className="specs">
           <div className="spec"><strong>{property.bhk}</strong>Layout</div>
-          <div className="spec"><strong>{property.area} sq ft</strong>Area</div>
-          <div className="spec"><strong>{money(property.deposit)}</strong>Deposit</div>
+          <div className="spec"><strong>{property.area ? `${property.area} sq ft` : "Area TBD"}</strong>Area</div>
+          <div className="spec"><strong>{formatDepositLabel(property.deposit)}</strong>Deposit</div>
         </div>
-        <div className="property-meta">{property.features.join(" - ")}</div>
+        <div className="feature-pills" aria-label="Property features">
+          {topFeatures.map((feature) => <span key={feature}>{feature}</span>)}
+          {extraFeatureCount > 0 && <span>+{extraFeatureCount}</span>}
+        </div>
         <div className="card-actions">
           <button className="button ghost" onClick={onDetails}>View details</button>
           <button className="button primary" onClick={onVisit}>Request visit</button>
