@@ -1599,6 +1599,7 @@ function SplitPropertyExplorer({ propertiesToShow, saved, onSave, onDetails, onV
   const [activeId, setActiveId] = useState(null);
   const [mobileView, setMobileView] = useState("list");
   const [selectedMapProperty, setSelectedMapProperty] = useState(null);
+  const mapPanelRef = useRef(null);
 
   function setActiveProperty(property) {
     setActiveId(property.id);
@@ -1633,6 +1634,7 @@ function SplitPropertyExplorer({ propertiesToShow, saved, onSave, onDetails, onV
         />
       </div>
       <PropertyMapPanel
+        panelRef={mapPanelRef}
         propertiesToShow={propertiesToShow}
         activeId={activeId}
         selectedProperty={selectedMapProperty}
@@ -1640,6 +1642,9 @@ function SplitPropertyExplorer({ propertiesToShow, saved, onSave, onDetails, onV
         onPinSelect={(property) => {
           setActiveId(property.id);
           setSelectedMapProperty(property);
+          window.requestAnimationFrame(() => {
+            mapPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+          });
         }}
         onPreviewClose={() => setSelectedMapProperty(null)}
         onPreviewDetails={() => selectedMapProperty && onDetails(selectedMapProperty)}
@@ -1656,6 +1661,7 @@ function propertiesWithCoordinates(propertiesToShow) {
 }
 
 function PropertyMapPanel({
+  panelRef,
   propertiesToShow,
   activeId,
   selectedProperty,
@@ -1671,7 +1677,7 @@ function PropertyMapPanel({
   const bounds = getCoordinateBounds(mappedProperties);
 
   return (
-    <aside className="map-panel" aria-label="Property map">
+    <aside className="map-panel" aria-label="Property map" ref={panelRef}>
       <div className="map-toolbar">
         <strong>{mapboxToken ? "Map" : "Map preview"}</strong>
         <span>{mappedProperties.length ? `${mappedProperties.length} mapped` : "Add coordinates in Manage"}</span>
