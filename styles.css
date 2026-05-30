@@ -682,6 +682,13 @@ h1 em {
   align-items: start;
 }
 
+.manage-grid {
+  display: grid;
+  grid-template-columns: minmax(360px, .9fr) minmax(0, 1.1fr);
+  gap: 18px;
+  align-items: start;
+}
+
 .account-stack {
   display: grid;
   gap: 18px;
@@ -694,6 +701,45 @@ h1 em {
   border-radius: 12px;
   padding: 22px;
   background: #fff;
+}
+
+.manage-form {
+  gap: 13px;
+}
+
+.manage-list-card {
+  gap: 14px;
+}
+
+.manage-list {
+  display: grid;
+  gap: 10px;
+}
+
+.manage-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 13px;
+  background: var(--soft);
+}
+
+.manage-row strong,
+.manage-row span {
+  display: block;
+}
+
+.manage-row strong {
+  font-size: .96rem;
+}
+
+.manage-row span {
+  color: var(--muted);
+  font-size: .84rem;
+  font-weight: 600;
 }
 
 .section-title-row {
@@ -1123,7 +1169,8 @@ h1 em {
   .hero-grid,
   .request-wrap,
   .modal-body,
-  .account-grid {
+  .account-grid,
+  .manage-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1289,6 +1336,11 @@ h1 em {
     display: grid;
     align-items: start;
     gap: 16px;
+  }
+
+  .manage-row {
+    display: grid;
+    align-items: start;
   }
 
   .modal-backdrop {

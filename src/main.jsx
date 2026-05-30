@@ -98,7 +98,29 @@ const properties = [
 
 const bhks = ["All", "1 RK", "1 BHK", "2 BHK", "3 BHK"];
 const money = (value) => `Rs ${Number(value).toLocaleString("en-IN")}`;
-const validPages = new Set(["home", "saved", "account"]);
+const validPages = new Set(["home", "saved", "account", "manage"]);
+
+function normalizePropertyRow(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    locality: row.locality,
+    city: row.city,
+    state: row.state,
+    bhk: row.bhk,
+    rent: row.rent,
+    deposit: row.deposit,
+    area: row.area,
+    type: row.type,
+    status: row.status,
+    image: row.image_url,
+    features: Array.isArray(row.features) ? row.features : [],
+    description: row.description,
+    latitude: row.latitude,
+    longitude: row.longitude,
+    is_active: row.is_active
+  };
+}
 
 function getInitialPage() {
   const hashPage = window.location.hash.replace("#", "");
@@ -132,6 +154,7 @@ function App() {
   const [priorityFormOpen, setPriorityFormOpen] = useState(false);
   const [howModalOpen, setHowModalOpen] = useState(false);
   const [toast, setToast] = useState("");
+  const canManageProperties = ["partner", "admin"].includes(profile?.role);
 
   useEffect(() => {
     if (!supabase) return undefined;
@@ -158,7 +181,7 @@ function App() {
       setInventoryLoading(true);
       const { data, error } = await supabase
         .from("properties")
-        .select("id, title, locality, city, bhk, rent, deposit, area, type, status, image_url, features, description")
+        .select("id, title, locality, city, state, bhk, rent, deposit, area, type, status, image_url, features, description, latitude, longitude, is_active")
         .eq("is_active", true)
         .order("created_at", { ascending: false });
 
@@ -170,23 +193,9 @@ function App() {
         return;
       }
 
-      const normalized = (data ?? []).map((row) => ({
-        id: row.id,
-        title: row.title,
-        locality: row.locality,
-        city: row.city,
-        bhk: row.bhk,
-        rent: row.rent,
-        deposit: row.deposit,
-        area: row.area,
-        type: row.type,
-        status: row.status,
-        image: row.image_url,
-        features: Array.isArray(row.features) ? row.features : [],
-        description: row.description
-      }));
+      const normalized = (data ?? []).map(normalizePropertyRow);
 
-      if (normalized.length) setInventory(normalized);
+      setInventory(normalized);
     }
 
     loadInventory();
@@ -370,6 +379,21 @@ function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  function openManagePage() {
+    if (!session?.user?.id) {
+      setAuthOpen(true);
+      notify("Login to manage properties.");
+      return;
+    }
+    if (!canManageProperties) {
+      notify("Property management is limited to partner and admin accounts.");
+      return;
+    }
+    setPage("manage");
+    setHash("#manage");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
 function openHome(sectionId) {
     setPage("home");
     setHash(sectionId ? `#${sectionId}` : "#home");
@@ -504,6 +528,81 @@ function openHome(sectionId) {
     notify("Visit request deleted.");
   }
 
+  async function saveManagedProperty(propertyForm) {
+    if (!supabase || !session?.user?.id || !canManageProperties) {
+      notify("You do not have permission to manage properties.");
+      return false;
+    }
+
+    const payload = {
+      id: propertyForm.id.trim(),
+      title: propertyForm.title.trim(),
+      locality: propertyForm.locality.trim(),
+      city: propertyForm.city.trim(),
+      state: propertyForm.state.trim() || null,
+      bhk: propertyForm.bhk,
+      rent: Number(propertyForm.rent),
+      deposit: Number(propertyForm.deposit || 0),
+      area: propertyForm.area ? Number(propertyForm.area) : null,
+      type: propertyForm.type.trim() || null,
+      status: propertyForm.status.trim() || "Ready",
+      image_url: propertyForm.image_url.trim() || null,
+      features: propertyForm.features
+        .split(",")
+        .map((feature) => feature.trim())
+        .filter(Boolean),
+      description: propertyForm.description.trim() || null,
+      latitude: propertyForm.latitude ? Number(propertyForm.latitude) : null,
+      longitude: propertyForm.longitude ? Number(propertyForm.longitude) : null,
+      is_active: propertyForm.is_active,
+      created_by: session.user.id
+    };
+
+    if (!payload.id || !payload.title || !payload.locality || !payload.city || !payload.bhk || !payload.rent) {
+      notify("Fill required property fields.");
+      return false;
+    }
+
+    const { data, error } = await supabase
+      .from("properties")
+      .upsert(payload)
+      .select("id, title, locality, city, state, bhk, rent, deposit, area, type, status, image_url, features, description, latitude, longitude, is_active")
+      .single();
+
+    if (error) {
+      notify(error.message);
+      return false;
+    }
+
+    const normalized = normalizePropertyRow(data);
+    setInventory((current) => {
+      const withoutCurrent = current.filter((property) => property.id !== normalized.id);
+      return normalized.is_active ? [normalized, ...withoutCurrent] : withoutCurrent;
+    });
+    notify("Property saved.");
+    return true;
+  }
+
+  async function deactivateManagedProperty(id) {
+    if (!supabase || !session?.user?.id || !canManageProperties) {
+      notify("You do not have permission to manage properties.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("properties")
+      .update({ is_active: false })
+      .eq("id", id);
+
+    if (error) {
+      notify(error.message);
+      return;
+    }
+
+    setInventory((current) => current.filter((property) => property.id !== id));
+    notify("Property deactivated.");
+  }
+
   async function requestVisit(property) {
     if (!supabase) {
       notify("Supabase is not configured.");
@@ -556,6 +655,7 @@ function openHome(sectionId) {
               <button onClick={() => setHowModalOpen(true)}>How it works</button>
               <button onClick={() => openHome("urgent")}>Urgent help</button>
               <button className={page === "saved" ? "active" : ""} onClick={openSavedPage}>Saved <span className="nav-count">{saved.size}</span></button>
+              {canManageProperties && <button className={page === "manage" ? "active" : ""} onClick={openManagePage}>Manage</button>}
             </div>
             {session ? (
               <div className="nav-account">
@@ -639,6 +739,12 @@ function openHome(sectionId) {
             onSave={toggleSaved}
             onDetails={setSelectedProperty}
             onVisit={requestVisit}
+          />
+        ) : page === "manage" && canManageProperties ? (
+          <ManagePropertiesPage
+            propertiesToShow={inventory}
+            onSaveProperty={saveManagedProperty}
+            onDeactivateProperty={deactivateManagedProperty}
           />
         ) : (
           <AccountPage
@@ -951,6 +1057,149 @@ function SavedPropertiesPage({ propertiesToShow, saved, onBack, onSave, onDetail
           onVisit={onVisit}
           emptyText="No saved properties yet. Browse properties and save homes you like."
         />
+      </div>
+    </section>
+  );
+}
+
+const emptyPropertyForm = {
+  id: "",
+  title: "",
+  locality: "",
+  city: "Bengaluru",
+  state: "Karnataka",
+  bhk: "1 BHK",
+  rent: "",
+  deposit: "",
+  area: "",
+  type: "Apartment",
+  status: "Ready",
+  image_url: "",
+  features: "",
+  description: "",
+  latitude: "",
+  longitude: "",
+  is_active: true
+};
+
+function ManagePropertiesPage({ propertiesToShow, onSaveProperty, onDeactivateProperty }) {
+  const [form, setForm] = useState(emptyPropertyForm);
+  const [saving, setSaving] = useState(false);
+
+  function updateField(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function editProperty(property) {
+    setForm({
+      id: property.id || "",
+      title: property.title || "",
+      locality: property.locality || "",
+      city: property.city || "Bengaluru",
+      state: property.state || "Karnataka",
+      bhk: property.bhk || "1 BHK",
+      rent: property.rent || "",
+      deposit: property.deposit || "",
+      area: property.area || "",
+      type: property.type || "Apartment",
+      status: property.status || "Ready",
+      image_url: property.image || "",
+      features: (property.features || []).join(", "),
+      description: property.description || "",
+      latitude: property.latitude || "",
+      longitude: property.longitude || "",
+      is_active: property.is_active !== false
+    });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function submitProperty(event) {
+    event.preventDefault();
+    setSaving(true);
+    const ok = await onSaveProperty(form);
+    setSaving(false);
+    if (ok) setForm(emptyPropertyForm);
+  }
+
+  return (
+    <section className="page-section">
+      <div className="container">
+        <div className="page-head">
+          <div>
+            <p className="eyebrow">Partner tools</p>
+            <h1 className="page-title">Manage properties.</h1>
+            <p className="listing-header-sub">Create listings now, with coordinates ready for a map view later.</p>
+          </div>
+          <button className="button ghost page-head-cta" onClick={() => setForm(emptyPropertyForm)}>New property</button>
+        </div>
+
+        <div className="manage-grid">
+          <form className="account-card manage-form" onSubmit={submitProperty}>
+            <div className="section-title-row">
+              <div>
+                <h3>Listing details</h3>
+                <p>Required fields are id, title, locality, city, layout, and rent.</p>
+              </div>
+            </div>
+
+            <div className="range-inputs">
+              <label className="field"><span>Property ID</span><input value={form.id} onChange={(event) => updateField("id", event.target.value)} placeholder="bp-301" required /></label>
+              <label className="field"><span>Status</span><input value={form.status} onChange={(event) => updateField("status", event.target.value)} placeholder="Ready" /></label>
+            </div>
+            <label className="field"><span>Title</span><input value={form.title} onChange={(event) => updateField("title", event.target.value)} placeholder="Quiet 2 BHK near Metro" required /></label>
+            <div className="range-inputs">
+              <label className="field"><span>Locality</span><input value={form.locality} onChange={(event) => updateField("locality", event.target.value)} placeholder="Indiranagar" required /></label>
+              <label className="field"><span>City</span><input value={form.city} onChange={(event) => updateField("city", event.target.value)} placeholder="Bengaluru" required /></label>
+            </div>
+            <div className="range-inputs">
+              <label className="field"><span>State</span><input value={form.state} onChange={(event) => updateField("state", event.target.value)} placeholder="Karnataka" /></label>
+              <label className="field"><span>Layout</span><select value={form.bhk} onChange={(event) => updateField("bhk", event.target.value)}>{bhks.filter((item) => item !== "All").map((item) => <option key={item}>{item}</option>)}</select></label>
+            </div>
+            <div className="range-inputs">
+              <label className="field"><span>Rent</span><input type="number" value={form.rent} onChange={(event) => updateField("rent", event.target.value)} placeholder="25000" required /></label>
+              <label className="field"><span>Deposit</span><input type="number" value={form.deposit} onChange={(event) => updateField("deposit", event.target.value)} placeholder="75000" /></label>
+            </div>
+            <div className="range-inputs">
+              <label className="field"><span>Area</span><input type="number" value={form.area} onChange={(event) => updateField("area", event.target.value)} placeholder="850" /></label>
+              <label className="field"><span>Type</span><input value={form.type} onChange={(event) => updateField("type", event.target.value)} placeholder="Apartment" /></label>
+            </div>
+            <label className="field"><span>Image URL</span><input value={form.image_url} onChange={(event) => updateField("image_url", event.target.value)} placeholder="https://..." /></label>
+            <label className="field"><span>Features</span><input value={form.features} onChange={(event) => updateField("features", event.target.value)} placeholder="Furnished, Balcony, Lift" /></label>
+            <div className="range-inputs">
+              <label className="field"><span>Latitude</span><input type="number" step="any" value={form.latitude} onChange={(event) => updateField("latitude", event.target.value)} placeholder="12.9716" /></label>
+              <label className="field"><span>Longitude</span><input type="number" step="any" value={form.longitude} onChange={(event) => updateField("longitude", event.target.value)} placeholder="77.5946" /></label>
+            </div>
+            <label className="field"><span>Description</span><textarea value={form.description} onChange={(event) => updateField("description", event.target.value)} placeholder="Short listing description" /></label>
+            <button className="button primary" type="submit" disabled={saving}>{saving ? "Saving..." : "Save property"}</button>
+          </form>
+
+          <div className="account-card manage-list-card">
+            <div className="section-title-row">
+              <div>
+                <h3>Active listings</h3>
+                <p>{propertiesToShow.length} properties visible to renters.</p>
+              </div>
+            </div>
+            {propertiesToShow.length ? (
+              <div className="manage-list">
+                {propertiesToShow.map((property) => (
+                  <div className="manage-row" key={property.id}>
+                    <div>
+                      <strong>{property.title}</strong>
+                      <span>{property.locality}, {property.city} - {property.bhk} - {money(property.rent)}</span>
+                    </div>
+                    <div className="request-row-actions">
+                      <button className="request-action-btn" onClick={() => editProperty(property)}>Edit</button>
+                      <button className="request-delete-btn" onClick={() => onDeactivateProperty(property.id)}>Deactivate</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="empty compact-empty">No active properties yet.</div>
+            )}
+          </div>
+        </div>
       </div>
     </section>
   );

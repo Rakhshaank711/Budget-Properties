@@ -112,11 +112,16 @@ create table if not exists public.properties (
   image_url text,
   features text[] not null default '{}'::text[],
   description text,
+  latitude numeric,
+  longitude numeric,
   is_active boolean not null default true,
   created_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.properties add column if not exists latitude numeric;
+alter table public.properties add column if not exists longitude numeric;
 
 drop trigger if exists set_properties_updated_at on public.properties;
 create trigger set_properties_updated_at
@@ -126,3 +131,4 @@ execute function public.set_updated_at();
 
 create index if not exists properties_is_active_idx on public.properties (is_active);
 create index if not exists properties_city_locality_idx on public.properties (city, locality);
+create index if not exists properties_lat_lng_idx on public.properties (latitude, longitude);
