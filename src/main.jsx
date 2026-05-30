@@ -129,6 +129,7 @@ function App() {
   const [urgentFeedback, setUrgentFeedback] = useState("");
   const [urgentError, setUrgentError] = useState("");
   const [priorityFormOpen, setPriorityFormOpen] = useState(false);
+  const [howModalOpen, setHowModalOpen] = useState(false);
   const [toast, setToast] = useState("");
 
   useEffect(() => {
@@ -503,17 +504,41 @@ function openHome(sectionId) {
         <div className="container topbar-inner">
           <div className="brand">Budget Properties</div>
           <nav className="nav" aria-label="Primary navigation">
-            <button className={page === "home" ? "active mobile-keep" : "mobile-keep"} onClick={() => openHome("properties")}>Properties</button>
-            <button onClick={() => openHome("how")}>How it works</button>
-            <button onClick={() => openHome("urgent")}>Urgent help</button>
-            <button className={page === "saved" ? "active" : ""} onClick={openSavedPage}>Saved {saved.size}</button>
+            <div className="nav-main">
+              <button className={page === "home" ? "active mobile-keep" : "mobile-keep"} onClick={() => openHome("properties")}>Properties</button>
+              <button onClick={() => setHowModalOpen(true)}>How it works</button>
+              <button onClick={() => openHome("urgent")}>Urgent help</button>
+              <button className={page === "saved" ? "active" : ""} onClick={openSavedPage}>Saved <span className="nav-count">{saved.size}</span></button>
+            </div>
             {session ? (
-              <>
-                <button className={page === "account" ? "active" : ""} onClick={openAccountPage}>Account</button>
-                <button onClick={signOut}>{userLabel} - Sign out</button>
-              </>
+              <div className="nav-account">
+                <button className={`account-nav-btn ${page === "account" ? "active" : ""}`} onClick={openAccountPage}>
+                  <span className="nav-label-full">Account</span>
+                  <span className="nav-label-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" focusable="false">
+                      <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" />
+                      <path d="M4.5 20a7.5 7.5 0 0 1 15 0" />
+                    </svg>
+                  </span>
+                  <span className="sr-only">Account</span>
+                  {!profile?.phone && <span className="nav-badge">!</span>}
+                </button>
+                <button className="signout-btn" onClick={signOut}>
+                  <span className="nav-label-full">{userLabel} - Sign out</span>
+                  <span className="nav-label-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" focusable="false">
+                      <path d="M10 6H6v12h4" />
+                      <path d="M13 12h8" />
+                      <path d="m17 8 4 4-4 4" />
+                    </svg>
+                  </span>
+                  <span className="sr-only">Sign out</span>
+                </button>
+              </div>
             ) : (
-              <button onClick={() => setAuthOpen(true)}>Login</button>
+              <div className="nav-account">
+                <button className="login-btn" onClick={() => setAuthOpen(true)}>Login</button>
+              </div>
             )}
           </nav>
         </div>
@@ -618,6 +643,10 @@ function openHome(sectionId) {
         />
       )}
 
+      {howModalOpen && (
+        <HowItWorksModal onClose={() => setHowModalOpen(false)} />
+      )}
+
       {toast && <div className="toast">{toast}</div>}
     </>
   );
@@ -647,6 +676,29 @@ function PriorityRequestModal({ onClose, onSubmit, feedback, error }) {
               <PriorityRequestForm onSubmit={onSubmit} error={error} />
             </>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HowItWorksModal({ onClose }) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="simple-modal" role="dialog" aria-modal="true" aria-label="How it works" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-head">
+          <strong>How it works</strong>
+          <button className="icon-button" onClick={onClose} aria-label="Close">x</button>
+        </div>
+        <div className="simple-modal-body">
+          <p className="eyebrow">Process</p>
+          <h2>Simple rental workflow.</h2>
+          <div className="steps-list">
+            <div><strong>1</strong><span>Browse verified budget homes.</span></div>
+            <div><strong>2</strong><span>Save properties you like.</span></div>
+            <div><strong>3</strong><span>Request visits or priority support.</span></div>
+          </div>
+          <button className="button primary full" onClick={onClose}>Got it</button>
         </div>
       </div>
     </div>
@@ -930,7 +982,7 @@ function AccountPage({
                     <input type="email" value={form.email} onChange={(event) => updateField("email", event.target.value)} placeholder="you@example.com" />
                   </label>
                   <label className="field">
-                    <span>Phone</span>
+                    <span>Phone {!form.phone && <em className="field-inline-hint">Add for faster follow-up</em>}</span>
                     <input value={form.phone} onChange={(event) => updateField("phone", event.target.value)} placeholder="+91 98765 43210" />
                   </label>
                   <div className="range-inputs">
