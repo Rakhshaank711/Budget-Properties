@@ -2592,37 +2592,29 @@ function formatRequestDate(value) {
 
 function PropertyCard({ property, saved, onSave, onDetails, onVisit, isActive, onHover }) {
   const topFeatures = (property.features || []).slice(0, 3);
-  const extraFeatureCount = Math.max(0, (property.features || []).length - topFeatures.length);
 
   return (
     <article className={`property-card ${isActive ? "active" : ""}`} onMouseEnter={onHover} onFocus={onHover}>
       <div className="property-media">
         <img src={property.image} alt={getPropertyImageAlt(property)} loading="lazy" />
-        {property.images?.length > 1 && <span className="badge badge-gallery">{property.images.length} photos</span>}
         <span className="badge">{property.status}</span>
-        {hasPropertyCoordinates(property) && <span className="badge badge-map">Mapped</span>}
         <button className={`heart ${saved ? "saved" : ""}`} onClick={onSave} aria-label={`Save ${property.title}`}>{saved ? "Saved" : "Save"}</button>
       </div>
       <div className="property-body">
-        <div className="card-kicker">
-          <span>{property.type || "Home"}</span>
-          <span>{property.locality}</span>
-        </div>
         <div className="property-title-row">
           <div>
             <div className="property-title">{property.title}</div>
             <div className="property-meta">{property.locality}, {property.city}</div>
           </div>
-          <div className="property-price"><strong>{money(property.rent)}</strong><span>/ mo</span></div>
+          <div className="property-price-badge"><strong>{money(property.rent)}</strong><span>/ mo</span></div>
         </div>
         <div className="specs">
           <div className="spec"><strong>{property.bhk}</strong>Layout</div>
-          <div className="spec"><strong>{property.area ? `${property.area} sq ft` : "Area TBD"}</strong>Area</div>
-          <div className="spec"><strong>{formatDepositLabel(property.deposit)}</strong>Deposit</div>
+          <div className="spec"><strong>{property.area ? `${property.area} sq ft` : "Size TBD"}</strong>Area</div>
+          <div className="spec"><strong>{property.localityTag || property.type || "Home"}</strong></div>
         </div>
-        <div className="feature-pills" aria-label="Property features">
-          {topFeatures.map((feature) => <span key={feature}>{feature}</span>)}
-          {extraFeatureCount > 0 && <span>+{extraFeatureCount}</span>}
+        <div className="property-meta card-feature-line">
+          {topFeatures.length ? topFeatures.join(" - ") : property.type || "Rental home"}
         </div>
         <div className="card-actions">
           <button className="button ghost" onClick={onDetails}>View details</button>
